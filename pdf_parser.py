@@ -20,7 +20,13 @@ from models import (
 )
 logger = logging.getLogger(__name__)
 
-
+"""
+在这里将pdf解析
+可选：
+cloudmineru  batch 模式（当前主力，返回 content_list.json 最丰富）
+cloudmineru  agent 模式（轻量场景）
+PyMuPDF （离线场景、简单 PDF）
+"""
 class CloudMinerUClient:
     """
     MinerU API 统一客户端

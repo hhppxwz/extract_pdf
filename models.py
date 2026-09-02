@@ -80,6 +80,8 @@ class MinerUTaskStatus(BaseModel):
     error: Optional[str] = None
     markdown_url: Optional[str] = None  # Agent API 用
     zip_url: Optional[str] = None  # v4 专用：full_zip_url
+    err_code: Optional[int] = None  #  错误码
+    err_msg: Optional[str] = None #错误信息
 
 
 # ============================================================
@@ -102,6 +104,22 @@ class ContentBlock(BaseModel):
     image_category: Optional[ImageCategory] = None
     image_url: Optional[str] = None       # MinIO 中的访问 URL
     image_size: Optional[tuple[int, int]] = None  # (w, h)
+    # 论文管线需要
+    chunk_level: Optional[str] = None      # abstract / section / paragraph / reference
+    section_title: Optional[str] = None     # 所属章节标题
+    chunk_index: Optional[int] = None       # 段落序号
+
+    # KG 管线需要
+    entities: Optional[list[dict]] = None   # 抽取的实体
+    relations: Optional[list[dict]] = None  # 抽取的关系
+
+    # 溯源需要
+    doc_type: Optional[str] = None          # 文档类型标签
+    doc_type_confidence: Optional[float] = None
+
+    # ===== 新增：存储 MinerU 原始 JSON =====
+    raw: Optional[dict] = None  # 或者用 Any，如果你存的是复杂结构
+    # =====================================
 
 
 # ============================================================

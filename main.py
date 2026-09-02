@@ -1,11 +1,15 @@
 """
 PDF 多模态提取入仓 —— 启动入口
 使用方式：
-    python main.py                    # 启动 FastAPI 服务
-    python main.py --process <pdf>    # 命令行处理单个 PDF
+    python main.py                              # 启动 FastAPI 服务
+    python main.py --process <pdf>              # 使用默认配置处理
+    python main.py --process <pdf> --backend pymupdf   # 使用本地 PyMuPDF
 """
 import sys
 import os
+import argparse
+import fitz
+import datetime
 
 # 确保工作目录为项目根目录
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -18,18 +22,30 @@ def run_api():
     print("=" * 60)
     print("PDF 多模态提取入仓服务")
     print("=" * 60)
-    print(f"Mock 模式: {os.getenv('MOCK_MODE', 'false')}")
     print("启动 FastAPI 服务于 http://127.0.0.1:8000")
     print("API 文档: http://127.0.0.1:8000/docs")
     print("=" * 60)
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
-def run_process(pdf_path: str):
+def run_process(pdf_path: str, backend: str = None):
     """命令行处理单个 PDF"""
+    # 如果指定了 backend，修改全局 config
+    if backend:
+        from config import app_config
+        app_config.parser.parser_backend = backend
+        print(f"使用解析后端: {backend}")
+
     from pipeline import process_pdf
-    print(f"正在处理: {pdf_path}")
-    result = process_pdf(pdf_path)
+
+    print(f"{datetime.datetime.now()} 正在处理: {pdf_path}")
+
+    with fitz.open(pdf_path) as doc:
+        page_count = len(doc)
+    print(f"共有: {page_count}页")
+
+    result = process_pdf(pdf_path,page_count)
+
     print(f"\n处理结果:")
     print(f"  文件 ID:    {result.file_id}")
     print(f"  状态:       {result.status.value}")
@@ -47,10 +63,23 @@ def run_process(pdf_path: str):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == "--process":
-        if len(sys.argv) < 3:
-            print("用法: python main.py --process <pdf文件路径>")
-            sys.exit(1)
-        run_process(sys.argv[2])
+    parser = argparse.ArgumentParser(description="PDF 多模态提取入仓工具")
+    parser.add_argument(
+        "--process",
+        type=str,
+        help="处理单个 PDF 文件的路径"
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["cloudmineru", "pymupdf"],
+        default=None,
+        help="指定解析后端：cloudmineru或pymupdf，默认从 config 读取"
+    )
+
+    args = parser.parse_args()
+
+    if args.process:
+        run_process(args.process, backend=args.backend)
     else:
         run_api()

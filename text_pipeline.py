@@ -11,7 +11,139 @@ import logging
 # 懒加载 Embedding 模型，避免未安装时阻塞导入
 _embedding_model: Optional[object] = None
 
+import re
 
+# ============================================================
+# 针对不同文档类型的重组逻辑
+# ============================================================
+
+def _merge_by_heading(text_blocks: list) -> list:
+    """
+    学术论文：按章节标题合并
+    判断标准（按优先级）：
+    1. MinerU 返回的 text_level == 2（二级标题）
+    2. 正则匹配（作为兜底，应对 MinerU 漏标的情况）
+    3. 排除过长文本（>80字，避免把正文段落误判为标题）
+    """
+    # ===== 写入处理前完整内容 =====
+    with open("before.txt", "w", encoding="utf-8") as f:
+        f.write(f"===== 处理前原始块 (共 {len(text_blocks)} 个) =====\n\n")
+        for idx, block in enumerate(text_blocks):
+            f.write(f"【块 {idx + 1}】页码: {block.page_num}\n")
+            f.write(f"内容:\n{block.content}\n")
+            f.write(f"原始json内容:\n{block.raw}\n")
+            f.write("-" * 80 + "\n\n")
+
+    heading_pattern = re.compile(
+        r'^(Abstract|Introduction|Method|Experiment|Conclusion|References|'
+        r'附录|第[一二三四五六七八九十]+章|'
+        r'\d+\.?\s+[A-Za-z])',  # 数字 + 可选点 + 空格 + 字母
+        re.I
+    )
+    sorted_blocks = sorted(text_blocks, key=lambda x: x.page_num)
+    merged = []
+    if not sorted_blocks:
+        return merged
+
+
+    current = {"text": "", "page_num": sorted_blocks[0].page_num}
+
+    for block in sorted_blocks:
+        text = block.content.strip()
+        if not text:
+            continue
+
+
+        # ===== 核心判断逻辑（三个标准） =====
+        # 标准 1：类型是 text（已满足，因为传入的就是 text_blocks）
+        #            且 text_level == 2（MinerU 的二级标题标记）
+        text_level = block.raw.get('text_level', 0)  # 如果没有该属性，默认 0
+        is_heading_by_level = (text_level == 2)
+
+        # 标准 2：正则匹配
+        is_heading_by_regex = bool(heading_pattern.match(text))
+
+        # 标准 3：长度不过长（真正的标题一般不会超过 80 个字）
+        is_too_long = len(text) > 80
+
+        # 最终判定：符合 level 或 正则，且不能太长
+        is_heading = (is_heading_by_level or is_heading_by_regex) and not is_too_long
+        # ========================================
+
+        if is_heading:
+            # 遇到标题：保存上一个章节
+            if current["text"]:
+                merged.append(current)
+            # 开启新章节（标题作为新 chunk 的开头）
+            current = {"text": text, "page_num": block.page_num}
+        else:
+            # 普通段落：追加到当前章节
+            if current["text"]:
+                current["text"] += "\n" + text
+            else:
+                current["text"] = text
+                current["page_num"] = block.page_num
+
+    # 保存最后一个章节
+    if current["text"]:
+        merged.append(current)
+
+    # ===== 写入处理后完整内容 =====
+    with open("after.txt", "w", encoding="utf-8") as f:
+        f.write(f"===== 处理后合并单元 (共 {len(merged)} 个) =====\n\n")
+        for idx, chunk in enumerate(merged):
+            f.write(f"【章节 {idx + 1}】起始页码: {chunk['page_num']}\n")
+            f.write(f"内容:\n{chunk['text']}\n")
+            f.write("=" * 80 + "\n\n")
+    return merged
+
+
+
+def _merge_by_article(text_blocks: list) -> list:
+    """
+    政策制度：按 "第X条" 合并
+    """
+    article_pattern = re.compile(r'^第[一二三四五六七八九十百]+条')
+    sorted_blocks = sorted(text_blocks, key=lambda x: x.page_num)
+    merged = []
+    current = {"text": "", "page_num": sorted_blocks[0].page_num if sorted_blocks else 0}
+
+    for block in sorted_blocks:
+        text = block.content.strip()
+        if not text:
+            continue
+        if article_pattern.match(text):
+            if current["text"]:
+                merged.append(current)
+            current = {"text": text, "page_num": block.page_num}
+        else:
+            if current["text"]:
+                current["text"] += "\n" + text
+            else:
+                current["text"] = text
+                current["page_num"] = block.page_num
+
+    if current["text"]:
+        merged.append(current)
+    return merged
+
+
+def _merge_by_page(text_blocks: list) -> list:
+    """
+    行政表单：按页码合并（不跨页），每一页作为一个独立的逻辑单元
+    """
+    from collections import defaultdict
+    page_map = defaultdict(list)
+    for block in text_blocks:
+        page_map[block.page_num].append(block.content.strip())
+
+    merged = []
+    for page_num, texts in sorted(page_map.items()):
+        merged.append({
+            "text": "\n".join([t for t in texts if t]),
+            "page_num": page_num
+        })
+    return merged
 
 def _get_embedding_model():
     """懒加载 sentence-transformers 模型"""
@@ -156,15 +288,33 @@ def store_chunks(chunks: list[TextChunk]) -> int:
 
 
 def process_text_blocks(
-    blocks: list[ContentBlock], file_id: str
+    blocks: list[ContentBlock], file_id: str,doc_type: str = "other"
 ) -> tuple[int, list[TextChunk]]:
     """
     文本块处理主入口：筛选文本块 → 分块 → Embedding → 存储
     返回 (存入的块数, TextChunk列表)
     """
-    text_blocks = [b for b in blocks if b.type == BlockType.TEXT and b.content.strip()]
+    text_blocks = [b for b in blocks if b.type == BlockType.TEXT
+                   and b.content.strip()
+                   and b.raw.get('type') not in ('header', 'footer','page_number','page_footnote') #过滤页眉页脚
+                   ]
     if not text_blocks:
         return 0, []
+    # ========== 【新增逻辑】根据文档类型进行重组 ==========
+    if doc_type == "academic_paper":
+        merged_units = _merge_by_heading(text_blocks)
+        print(f"[重组] 学术论文: {len(text_blocks)} 个原始块 → {len(merged_units)} 个章节单元")
+    elif doc_type == "policy_regulation":
+        merged_units = _merge_by_article(text_blocks)
+        print(f"[重组] 政策制度: {len(text_blocks)} 个原始块 → {len(merged_units)} 个条款单元")
+    elif doc_type == "admin_form":
+        merged_units = _merge_by_page(text_blocks)
+        print(f"[重组] 行政表单: {len(text_blocks)} 个原始块 → {len(merged_units)} 个页面单元")
+    else:
+        # 其他类型：不做合并，每个原始块独立处理（保持你原有的行为）
+        merged_units = [{"text": b.content, "page_num": b.page_num} for b in text_blocks]
+        print(f"[重组] 其他类型: 不合并，保留 {len(merged_units)} 个独立块")
+    # ====================================================
 
     all_chunks: list[TextChunk] = []
     for block in text_blocks:

@@ -3,12 +3,21 @@
 串联：解析 → 分类 → 文本管线 → 图片管线 → 表格管线 → 溯源记录
 """
 import time
+import datetime
 import traceback
 from typing import Optional
 
 from config import app_config
+from document_classfier import classify_document
+from metadata import extract_document_metadata
 from models import ContentBlock, ProcessingResult, ProcessingStatus, BlockType
+
 from pdf_parser import get_parser_client
+from parsers import PDFParser
+
+
+
+
 from classifier import classify_blocks
 from text_pipeline import process_text_blocks
 from image_pipeline import process_image_blocks
@@ -20,7 +29,7 @@ from metadata_service import (
 from storage_adapter import storage
 
 import hashlib
-
+'''
 def _convert_parsed_data_to_blocks(
         parsed_data: dict,
         file_path: str,
@@ -199,14 +208,15 @@ def _convert_parsed_data_to_blocks(
             blocks.append(block)
 
     return blocks
-def process_pdf(file_path: str) -> ProcessingResult:
+    '''
+def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
     t_start = time.time()
     errors: list[str] = []
     file_id = ""
 
     try:
         # ---- Step 1: 读取文件，上传到 MinIO ----
-        print("开始读取文件上传至MinIO")
+        print(f"{datetime.datetime.now()} 开始读取文件上传至MinIO")
         print(f"file_id: {file_id}")
         print(f"file_path: {file_path}")
 
@@ -230,21 +240,29 @@ def process_pdf(file_path: str) -> ProcessingResult:
             errors.append(f"MinIO 上传失败: {e}")
 
         # ---- Step 3: cloudmineru 解析 ----
-        parser = get_parser_client()
+        #临时注释测试  parser = get_parser_client()
+        parser = PDFParser()  # 自动根据 config 选择后端
+        print(f"{datetime.datetime.now()} 开始解析pdf")
+
+
         try:
             # 返回原始数据
-            parsed_data = parser.parse(file_path)
-            # 转换为 ContentBlock 列表
-            print("解析完成，转换为contentblock")
-            blocks = _convert_parsed_data_to_blocks(parsed_data, file_path, file_id)
+            blocks = parser.parse(file_path, page_count)
+            print(f"{datetime.datetime.now()} 解析完成，共 {len(blocks)} 个块")
+
 
         except Exception as e:
+            '''
             record_file_failed(file_id, f"cloudmineru 解析失败: {e}")
             return ProcessingResult(
                 file_id=file_id,
                 status=ProcessingStatus.FAILED,
                 errors=[f"cloudmineru 解析失败: {e}"],
-            )
+            )'''
+            import traceback
+            traceback.print_exc()  # ← 打印完整堆栈
+            # 然后向上抛出或记录错误
+            raise
 
         # 填充 file_id
         for b in blocks:
@@ -252,26 +270,56 @@ def process_pdf(file_path: str) -> ProcessingResult:
 
         total_blocks = len(blocks)
 
+        #判断类型：学术期刊/规章制度/……
+        try:
+            classification = classify_document(file_path, file_name)
+        except Exception as e:
+            import traceback
+            errors.append(f"{datetime.datetime.now()} 分类pdf失败: {e}")
+            traceback.print_exc()
+        doc_type = classification["doc_type"]
+        doc_conf = classification["confidence"]
+        print(f"分类结果{classification}")
+
+        #-----元数据抽取--------------
+        # ... 在 process_pdf 中 ...
+        try:
+            metadata = extract_document_metadata(blocks, doc_type)
+            print(f"{datetime.datetime.now()}  提取metadata为{metadata}")
+        except Exception as e:
+            import traceback
+            errors.append(f"matedata获取失败: {e}")
+            traceback.print_exc()
+
+
         # ---- Step 4: 分类所有表格块 ----
+        print(f"{datetime.datetime.now()}  开始分类表格块")
         classify_blocks(blocks)
+        print(f"{datetime.datetime.now()}  分类后长度{len(blocks)}")
+
 
         # ---- Step 5: 文本管线 ----
         text_stored = 0
+        print(f"{datetime.datetime.now()}  开始文本管线")
         try:
-            text_stored, _ = process_text_blocks(blocks, file_id)
+            text_stored, _ = process_text_blocks(blocks, file_id,doc_type)
         except Exception as e:
+            import traceback
             errors.append(f"文本管线失败: {e}")
             traceback.print_exc()
-
+        print(f"{datetime.datetime.now()}  文本管线结束")
         # ---- Step 6: 图片管线 ----
+        print(f"{datetime.datetime.now()}  开始图片管线")
         images_stored = 0
         try:
             images_stored, _ = process_image_blocks(blocks, file_id)
         except Exception as e:
             errors.append(f"图片管线失败: {e}")
             traceback.print_exc()
+        print(f"{datetime.datetime.now()}  图片管线结束")
 
         # ---- Step 7: 表格管线 ----
+        print(f"{datetime.datetime.now()}  开始表格管线")
         dt_stored = 0
         form_stored = 0
         uncertain_count = 0
@@ -280,7 +328,7 @@ def process_pdf(file_path: str) -> ProcessingResult:
         except Exception as e:
             errors.append(f"表格管线失败: {e}")
             traceback.print_exc()
-
+        print(f"{datetime.datetime.now()}  表格管线结束")
         # ---- Step 8: 溯源记录 ----
         for b in blocks:
             try:

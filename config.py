@@ -6,6 +6,12 @@
 import os
 from dataclasses import dataclass, field
 
+@dataclass
+class ParserConfig:
+    parser_backend: str = "cloudmineru"  # "cloudmineru" | "pymupdf"
+    pymupdf_extract_images: bool = True
+    pymupdf_extract_tables: bool = True
+
 
 @dataclass
 class CloudMinerUConfig:
@@ -24,6 +30,7 @@ class CloudMinerUConfig:
     ))
     timeout_per_page: int = 3
     poll_interval: float = 2.0
+    mode: str = "v4"         #可选：v4或agent   默认v4即batch
 
 
 @dataclass
@@ -100,6 +107,8 @@ class EmbeddingConfig:
 @dataclass
 class AppConfig:
     """应用总配置"""
+    parser: ParserConfig = field(default_factory=ParserConfig)
+
     cloudmineru: CloudMinerUConfig = field(default_factory=CloudMinerUConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
