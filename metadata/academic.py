@@ -171,7 +171,7 @@ def extract_academic_metadata(blocks: List[ContentBlock]) -> Dict[str, str]:
     # 优先从 raw 中取 type='title' 的块
     title = None
     for b in header_blocks:
-        if b.raw.get('type') == 'title':
+        if (b.raw or {}).get('type') == 'title':
             title = b.content.strip()
             break
     # 若没找到，取第一个长度 > 20 且不含句号的长句（启发式）
@@ -188,7 +188,7 @@ def extract_academic_metadata(blocks: List[ContentBlock]) -> Dict[str, str]:
     # ===== 3. 1定位 intro 索引（正文开始） =====
     intro_idx = -1
     for i, b in enumerate(header_blocks):
-        if b.raw.get('text_level') == 2:
+        if (b.raw or {}).get('text_level') == 2:
             text = b.content.strip().lower().replace(' ', '')
             if 'introduction' in text:
                 intro_idx = i
@@ -196,14 +196,14 @@ def extract_academic_metadata(blocks: List[ContentBlock]) -> Dict[str, str]:
     # 若没找到，尝试找 text_level=2 的第一个块
     if intro_idx == -1:
         for i, b in enumerate(header_blocks):
-            if b.raw.get('text_level') == 2:
+            if (b.raw or {}).get('text_level') == 2:
                 intro_idx = i
                 break
 
     # 找到标题块索引（第一个 text_level=1 或 type='title'）
     title_idx = -1
     for i, b in enumerate(header_blocks):
-        if b.raw.get('text_level') == 1 or b.raw.get('type') == 'title':
+        if (b.raw or {}).get('text_level') == 1 or (b.raw or {}).get('type') == 'title':
             title_idx = i
             break
     if title_idx == -1:

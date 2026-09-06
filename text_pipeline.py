@@ -57,7 +57,7 @@ def _merge_by_heading(text_blocks: list) -> list:
         # ===== 核心判断逻辑（三个标准） =====
         # 标准 1：类型是 text（已满足，因为传入的就是 text_blocks）
         #            且 text_level == 2（MinerU 的二级标题标记）
-        text_level = block.raw.get('text_level', 0)  # 如果没有该属性，默认 0
+        text_level = (block.raw or {}).get("text_level", 0) # 如果没有该属性，默认 0
         is_heading_by_level = (text_level == 2)
 
         # 标准 2：正则匹配
@@ -148,7 +148,7 @@ def _merge_by_page(text_blocks: list) -> list:
 def _get_embedding_model():
     """懒加载 sentence-transformers 模型"""
     global _embedding_model
-    if _embedding_model is None and not app_config.mock_mode:
+    if _embedding_model is None:
         from sentence_transformers import SentenceTransformer
         try:
             # 先尝试仅本地加载
@@ -167,7 +167,8 @@ def _get_embedding_model():
             )
             print(f"成功下载模型: {app_config.embedding.model_name}")
             return _embedding_model
-
+    # 模型已经缓存时也必须返回实例，不能隐式返回 None。
+    return _embedding_model
 
 def chunk_text(
     text: str, file_id: str, block_id: str, page_num: int = 0
@@ -237,15 +238,9 @@ def _make_chunk(
 def embed_chunks(chunks: list[TextChunk]) -> list[TextChunk]:
     """
     对文本块批量生成 Embedding 向量。
-    mock 模式下返回零向量占位。
+    使用 Embedding 模型生成向量。
     """
     if not chunks:
-        return chunks
-
-    if app_config.mock_mode:
-        # mock 模式：返回 128 维零向量
-        for chunk in chunks:
-            chunk.embedding = [0.0] * 128
         return chunks
 
     model = _get_embedding_model()
@@ -291,13 +286,20 @@ def process_text_blocks(
     blocks: list[ContentBlock], file_id: str,doc_type: str = "other"
 ) -> tuple[int, list[TextChunk]]:
     """
-    文本块处理主入口：筛选文本块 → 分块 → Embedding → 存储
+    文本块处理主入口：筛选文本块 → 重组(按照逻辑分大块，比如一个论文章节分为一大块） → 分块 → Embedding → 存储
     返回 (存入的块数, TextChunk列表)
     """
+
     text_blocks = [b for b in blocks if b.type == BlockType.TEXT
-                   and b.content.strip()
-                   and b.raw.get('type') not in ('header', 'footer','page_number','page_footnote') #过滤页眉页脚
-                   ]
+               and b.content.strip()
+               and (b.raw or {}).get("type") not in (
+                    "header",
+                    "footer",
+                    "page_number",
+                    "page_footnote",
+                ) #过滤页眉页脚
+               ]
+
     if not text_blocks:
         return 0, []
     # ========== 【新增逻辑】根据文档类型进行重组 ==========
@@ -317,8 +319,23 @@ def process_text_blocks(
     # ====================================================
 
     all_chunks: list[TextChunk] = []
-    for block in text_blocks:
-        chunks = chunk_text(block.content, file_id, block.block_id, block.page_num)
+    for unit_index, unit in enumerate(merged_units):
+        text = unit.get("text", "").strip()
+        if not text:
+            continue
+
+        page_num = unit.get("page_num", 0)
+        block_id = unit.get(
+            "block_id",
+            f"{file_id}_merged_{unit_index}"
+        )
+
+        chunks = chunk_text(
+            text=text,
+            file_id=file_id,
+            block_id=block_id,
+            page_num=page_num,
+        )
         all_chunks.extend(chunks)
 
     if not all_chunks:

@@ -1,13 +1,13 @@
 """
 统一存储适配层
 封装 PostgreSQL + pgvector + JSONB（关系/向量/文档） 和 MinIO（二进制对象）。
-支持 mock 模式：内存模拟存储，不连接真实后端。
+统一连接 PostgreSQL、pgvector、JSONB 和 MinIO 真实后端。
 """
 import json
 import hashlib
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Optional, Any, Sequence
 from dataclasses import dataclass, field
 
 from config import app_config
@@ -34,9 +34,29 @@ class RelationalStorage(ABC):
 
     @abstractmethod
     def query(
-        self, table_name: str, where: str = "", limit: int = 100
+        self,
+        table_name: str,
+        where: str = "",
+        limit: int = 100,
+        params: Optional[Sequence[Any]] = None,
     ) -> list[dict[str, Any]]:
         """查询表中数据"""
+        ...
+
+    @abstractmethod
+    def update_rows(
+        self,
+        table_name: str,
+        values: dict[str, Any],
+        where: str,
+        params: Optional[Sequence[Any]] = None,
+    ) -> int:
+        """按参数化条件更新数据，返回更新行数"""
+        ...
+
+    @abstractmethod
+    def execute(self, sql: str, params: Optional[Sequence[Any]] = None) -> None:
+        """执行参数化 SQL 或幂等 DDL"""
         ...
 
 
@@ -121,6 +141,8 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
     @property
     def conn(self):
         if self._conn is None:
+
+
             import psycopg2
             import psycopg2.extras
             self._conn = psycopg2.connect(
@@ -159,17 +181,42 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
         return len(rows)
 
     def query(
-        self, table_name: str, where: str = "", limit: int = 100
+        self,
+        table_name: str,
+        where: str = "",
+        limit: int = 100,
+        params: Optional[Sequence[Any]] = None,
     ) -> list[dict[str, Any]]:
         sql = f'SELECT * FROM "{table_name}"'
         if where:
             sql += f" WHERE {where}"
         sql += f" LIMIT {limit}"
-        with self.conn.cursor() as cur:
-            import psycopg2.extras
-            cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(sql)
+        import psycopg2.extras
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, tuple(params or ()))
             return [dict(row) for row in cur.fetchall()]
+
+    def update_rows(
+        self,
+        table_name: str,
+        values: dict[str, Any],
+        where: str,
+        params: Optional[Sequence[Any]] = None,
+    ) -> int:
+        """更新内部固定表，条件值通过参数传入，避免 SQL 注入。"""
+        if not values:
+            return 0
+        set_sql = ", ".join(f'"{column}" = %s' for column in values)
+        sql = f'UPDATE "{table_name}" SET {set_sql} WHERE {where}'
+        sql_params = tuple(values.values()) + tuple(params or ())
+        with self.conn.cursor() as cur:
+            cur.execute(sql, sql_params)
+            return cur.rowcount
+
+    def execute(self, sql: str, params: Optional[Sequence[Any]] = None) -> None:
+        """执行参数化 SQL，并提交当前语句。"""
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params or ()))
 
     # --- 向量（pgvector）---
 
@@ -325,164 +372,20 @@ class MinIOStorageAdapter(ObjectStorage):
 
 
 # ============================================================
-# Mock 实现（内存存储，用于测试）
-# ============================================================
-
-class MockRelationalStorage(RelationalStorage):
-    """内存关系表存储"""
-
-    def __init__(self):
-        self._tables: dict[str, list[dict[str, Any]]] = {}
-
-    def create_table(self, table_name: str, columns: list[tuple[str, str]]) -> None:
-        if table_name not in self._tables:
-            self._tables[table_name] = []
-
-    def insert_rows(
-        self, table_name: str, columns: list[str], rows: list[list[Any]]
-    ) -> int:
-        if table_name not in self._tables:
-            self._tables[table_name] = []
-        for row in rows:
-            self._tables[table_name].append(dict(zip(columns, row)))
-        return len(rows)
-
-    def query(
-        self, table_name: str, where: str = "", limit: int = 100
-    ) -> list[dict[str, Any]]:
-        rows = self._tables.get(table_name, [])
-        # 简陋的 where 过滤（仅支持 key=value 格式）
-        if where and "=" in where:
-            key, val = where.split("=", 1)
-            key = key.strip()
-            val = val.strip().strip("'\"")
-            rows = [r for r in rows if str(r.get(key, "")) == val]
-        return rows[:limit]
-
-
-class MockVectorStorage(VectorStorage):
-    """内存向量存储（余弦相似度计算）"""
-
-    def __init__(self):
-        self._indices: dict[str, list[dict[str, Any]]] = {}
-        self._dims: dict[str, int] = {}
-
-    def create_index(self, index_name: str, dim: int) -> None:
-        self._indices[index_name] = []
-        self._dims[index_name] = dim
-
-    def insert_vectors(
-        self,
-        index_name: str,
-        vectors: list[list[float]],
-        metadata: list[dict[str, Any]],
-    ) -> int:
-        if index_name not in self._indices:
-            self._indices[index_name] = []
-        for vec, meta in zip(vectors, metadata):
-            self._indices[index_name].append({
-                "id": str(uuid.uuid4())[:8],
-                "embedding": vec,
-                "metadata": meta,
-            })
-        return len(vectors)
-
-    def search(
-        self, index_name: str, query_vector: list[float], top_k: int = 10
-    ) -> list[dict[str, Any]]:
-        items = self._indices.get(index_name, [])
-        if not items:
-            return []
-        # 计算余弦相似度
-        scores = []
-        for item in items:
-            sim = self._cosine_similarity(query_vector, item["embedding"])
-            scores.append((sim, item))
-        scores.sort(key=lambda x: x[0], reverse=True)
-        return [
-            {"id": item["id"], "metadata": item["metadata"], "similarity": sim}
-            for sim, item in scores[:top_k]
-        ]
-
-    @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
-
-
-class MockDocumentStorage(DocumentStorage):
-    """内存文档存储"""
-
-    def __init__(self):
-        self._collections: dict[str, dict[str, dict[str, Any]]] = {}
-
-    def insert_document(
-        self, collection: str, document: dict[str, Any], doc_id: str = ""
-    ) -> str:
-        if not doc_id:
-            doc_id = str(uuid.uuid4())[:12]
-        if collection not in self._collections:
-            self._collections[collection] = {}
-        self._collections[collection][doc_id] = document
-        return doc_id
-
-    def find_documents(
-        self, collection: str, filter_expr: str = "", limit: int = 100
-    ) -> list[dict[str, Any]]:
-        docs = self._collections.get(collection, {})
-        result = [{"id": k, "doc": v} for k, v in docs.items()]
-        return result[:limit]
-
-
-class MockObjectStorage(ObjectStorage):
-    """内存对象存储（大文件可落盘到临时目录）"""
-
-    def __init__(self):
-        import tempfile
-        self._store: dict[str, bytes] = {}
-        self._tmp_dir = tempfile.mkdtemp(prefix="mock_minio_")
-
-    def ensure_bucket(self, bucket: str) -> None:
-        pass
-
-    def upload(self, bucket: str, key: str, data: bytes, content_type: str = "") -> str:
-        full_key = f"{bucket}/{key}"
-        self._store[full_key] = data
-        return f"mock://minio/{full_key}"
-
-    def download(self, bucket: str, key: str) -> bytes:
-        full_key = f"{bucket}/{key}"
-        return self._store.get(full_key, b"")
-
-
-# ============================================================
 # 统一的 StorageFacade：对外暴露简化接口
 # ============================================================
 
 class StorageFacade:
     """
     统一存储门面。
-    根据 mock_mode 自动选择真实或 mock 实现。
+    统一使用真实后端实现。
     """
 
     def __init__(self):
-        mock = app_config.mock_mode
-        self.relational: RelationalStorage = (
-            MockRelationalStorage() if mock else PgStorageAdapter()
-        )
-        self.vector: VectorStorage = (
-            MockVectorStorage() if mock else self.relational  # type: ignore
-        )
-        self.document: DocumentStorage = (
-            MockDocumentStorage() if mock else self.relational  # type: ignore
-        )
-        self.object: ObjectStorage = (
-            MockObjectStorage() if mock else MinIOStorageAdapter()
-        )
+        self.relational: RelationalStorage = PgStorageAdapter()
+        self.vector: VectorStorage = self.relational  # type: ignore
+        self.document: DocumentStorage = self.relational  # type: ignore
+        self.object: ObjectStorage = MinIOStorageAdapter()
 
     def close(self):
         if hasattr(self.relational, "close"):

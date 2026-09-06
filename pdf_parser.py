@@ -563,75 +563,9 @@ class CloudMinerUClient:
             self._client = None
 
 # ============================================================
-# Mock 客户端：不连接真实 cloudmineru，用于测试
-# ============================================================
-
-class MockCloudMinerUClient(CloudMinerUClient):
-    """mock 客户端，返回模拟的解析结果，用于测试 Pipeline 逻辑"""
-
-    def __init__(self, config: Optional[CloudMinerUConfig] = None):
-        # Mock 模式下，不关心真实 API，可直接调用父类，但避免初始化网络
-        super().__init__(config=config, mode="agent")  # 模式随意
-
-    def submit(self, file_path: str) -> str:
-        return f"mock_task_{uuid.uuid4().hex[:8]}"
-
-    def get_status(self, task_id: str) -> MinerUTaskStatus:
-        # 模拟一个处理中的状态（可自定义）
-        return MinerUTaskStatus(
-            task_id=task_id,
-            status="processing",
-            progress=50.0,
-        )
-
-    def parse(self, file_path: str, page_count: int = 0) -> list[ContentBlock]:
-        """返回模拟内容块：1 个文本块 + 1 个数据表 + 1 个表单 + 1 个图片"""
-        return [
-            ContentBlock(
-                block_id="blk_mock_text_001",
-                type=BlockType.TEXT,
-                page_num=0,
-                content="这是一段模拟的 PDF 文本内容，用于测试文本分块和 Embedding 流程。",
-            ),
-            ContentBlock(
-                block_id="blk_mock_dtable_001",
-                type=BlockType.TABLE,
-                page_num=1,
-                content="<table><tr><th>学号</th><th>姓名</th><th>成绩</th></tr>"
-                        "<tr><td>001</td><td>张三</td><td>85</td></tr>"
-                        "<tr><td>002</td><td>李四</td><td>92</td></tr>"
-                        "<tr><td>合计</td><td></td><td>177</td></tr></table>",
-                table_html="<table><tr><th>学号</th><th>姓名</th><th>成绩</th></tr>"
-                           "<tr><td>001</td><td>张三</td><td>85</td></tr>"
-                           "<tr><td>002</td><td>李四</td><td>92</td></tr>"
-                           "<tr><td>合计</td><td></td><td>177</td></tr></table>",
-            ),
-            ContentBlock(
-                block_id="blk_mock_form_001",
-                type=BlockType.TABLE,
-                page_num=2,
-                content="<table><tr><td>姓名</td><td>________</td></tr>"
-                        "<tr><td>日期</td><td>________</td></tr>"
-                        "<tr><td>审批意见</td><td>________</td></tr></table>",
-                table_html="<table><tr><td>姓名</td><td>________</td></tr>"
-                           "<tr><td>日期</td><td>________</td></tr>"
-                           "<tr><td>审批意见</td><td>________</td></tr></table>",
-            ),
-            ContentBlock(
-                block_id="blk_mock_img_001",
-                type=BlockType.IMAGE,
-                page_num=0,
-                content="https://example.com/mock_image.png",
-            ),
-        ]
-
-
-# ============================================================
 # 工厂函数
 # ============================================================
 
 def get_parser_client() -> CloudMinerUClient:
-    """工厂函数：根据 mock_mode 返回真实或 mock 客户端"""
-    if app_config.mock_mode:
-        return MockCloudMinerUClient()
+    """创建真实的 MinerU 客户端"""
     return CloudMinerUClient()

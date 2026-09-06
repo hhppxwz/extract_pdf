@@ -5,6 +5,7 @@
 import time
 import datetime
 import traceback
+
 from typing import Optional
 
 from config import app_config
@@ -213,6 +214,9 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
     t_start = time.time()
     errors: list[str] = []
     file_id = ""
+    has_critical_error = False
+    final_status = ProcessingStatus.DONE
+
 
     try:
         # ---- Step 1: 读取文件，上传到 MinIO ----
@@ -225,19 +229,23 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         file_name = file_path.replace("\\", "/").split("/")[-1]
 
         # ---- Step 2: 记录文件开始处理 ----
-        file_id = record_file_start(file_name, file_data)
+        file_id = record_file_start(file_name, file_data, page_count)
 
-        # 上传原始 PDF 到 MinIO
-        minio_key = f"pdf/{file_id}.pdf"
-        try:
-            storage.object.upload(
-                app_config.minio.bucket_pdf,
-                minio_key,
-                file_data,
-                content_type="application/pdf",
-            )
-        except Exception as e:
-            errors.append(f"MinIO 上传失败: {e}")
+        # 上传原始 PDF 到 MinIO；抽取验证阶段可以通过环境变量暂时关闭。
+        if app_config.minio.enabled:
+            minio_key = f"pdf/{file_id}.pdf"
+            try:
+                storage.object.upload(
+                    app_config.minio.bucket_pdf,
+                    minio_key,
+                    file_data,
+                    content_type="application/pdf",
+                )
+            except Exception:
+                errors.append(f"MinIO 上传失败:  {traceback.format_exc()}")
+                has_critical_error = True
+        else:
+            print("已跳过 MinIO 原始文件上传（MINIO_ENABLED=false）")
 
         # ---- Step 3: cloudmineru 解析 ----
         #临时注释测试  parser = get_parser_client()
@@ -259,7 +267,7 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
                 status=ProcessingStatus.FAILED,
                 errors=[f"cloudmineru 解析失败: {e}"],
             )'''
-            import traceback
+
             traceback.print_exc()  # ← 打印完整堆栈
             # 然后向上抛出或记录错误
             raise
@@ -271,25 +279,45 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         total_blocks = len(blocks)
 
         #判断类型：学术期刊/规章制度/……
+        classification = {"doc_type": "other", "confidence": 0.0}
         try:
             classification = classify_document(file_path, file_name)
         except Exception as e:
-            import traceback
             errors.append(f"{datetime.datetime.now()} 分类pdf失败: {e}")
-            traceback.print_exc()
+
         doc_type = classification["doc_type"]
         doc_conf = classification["confidence"]
         print(f"分类结果{classification}")
 
         #-----元数据抽取--------------
         # ... 在 process_pdf 中 ...
+        metadata = {}
         try:
             metadata = extract_document_metadata(blocks, doc_type)
             print(f"{datetime.datetime.now()}  提取metadata为{metadata}")
         except Exception as e:
-            import traceback
-            errors.append(f"matedata获取失败: {e}")
-            traceback.print_exc()
+            errors.append(f"matedata获取失败: {traceback.format_exc()}")
+
+        # 规章制度单独保存文档和条款结构。此阶段只使用解析块和确定性规则，
+        # 实体、关系抽取由独立命令执行，避免大模型失败影响 PDF 基础处理。
+        if doc_type == "policy_regulation":
+            try:
+                from policy_pipeline import structure_policy_document
+
+                structure_result = structure_policy_document(
+                    file_id=file_id,
+                    file_name=file_name,
+                    blocks=blocks,
+                    metadata=metadata,
+                )
+                print(
+                    f"{datetime.datetime.now()} 制度结构化完成："
+                    f"{structure_result['clause_count']} 条，"
+                    f"质量 {structure_result['parse_quality']:.3f}"
+                )
+            except Exception as e:
+                errors.append(f"制度条款结构化失败: {traceback.format_exc()}")
+
 
 
         # ---- Step 4: 分类所有表格块 ----
@@ -304,9 +332,9 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         try:
             text_stored, _ = process_text_blocks(blocks, file_id,doc_type)
         except Exception as e:
-            import traceback
-            errors.append(f"文本管线失败: {e}")
-            traceback.print_exc()
+            errors.append(f"文本管线失败: {traceback.format_exc()}")
+            has_critical_error = True
+
         print(f"{datetime.datetime.now()}  文本管线结束")
         # ---- Step 6: 图片管线 ----
         print(f"{datetime.datetime.now()}  开始图片管线")
@@ -314,8 +342,8 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         try:
             images_stored, _ = process_image_blocks(blocks, file_id)
         except Exception as e:
-            errors.append(f"图片管线失败: {e}")
-            traceback.print_exc()
+            errors.append(f"图片管线失败: {traceback.format_exc()}")
+
         print(f"{datetime.datetime.now()}  图片管线结束")
 
         # ---- Step 7: 表格管线 ----
@@ -326,8 +354,8 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         try:
             dt_stored, form_stored, uncertain_count = process_table_blocks(blocks, file_id)
         except Exception as e:
-            errors.append(f"表格管线失败: {e}")
-            traceback.print_exc()
+            errors.append(f"表格管线失败: {traceback.format_exc()}")
+
         print(f"{datetime.datetime.now()}  表格管线结束")
         # ---- Step 8: 溯源记录 ----
         for b in blocks:
@@ -349,15 +377,22 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
                         record_block_storage(file_id, b, target, loc)
                     else:
                         record_block_storage(file_id, b, "pending_review", "")
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"存储溯源记录失败 (block {b.block_id}): {e}")
+                has_critical_error = True
 
         # ---- 完成 ----
-        record_file_done(file_id)
+        # 最终状态
+        if has_critical_error:
+            final_status = ProcessingStatus.FAILED
+            record_file_failed(file_id, "; ".join(errors))
+        else:
+            final_status = ProcessingStatus.DONE
+            record_file_done(file_id)
 
         return ProcessingResult(
             file_id=file_id,
-            status=ProcessingStatus.DONE,
+            status=final_status,
             total_blocks=total_blocks,
             text_chunks_stored=text_stored,
             images_stored=images_stored,
@@ -375,6 +410,6 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         return ProcessingResult(
             file_id=file_id,
             status=ProcessingStatus.FAILED,
-            errors=errors + [f"Pipeline 整体失败: {e}"],
+            errors=errors + [f"Pipeline 整体失败: {traceback.format_exc()}"],
             duration_seconds=duration,
         )

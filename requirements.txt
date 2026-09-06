@@ -13,3 +13,4 @@ openai>=1.0.0
 python-multipart>=0.0.9
 beautifulsoup4>=4.12.0
 pymupdf>=1.23.0
+python-dotenv>=1.0.0

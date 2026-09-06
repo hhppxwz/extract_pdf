@@ -62,5 +62,5 @@ def analyze_chart(image_path: str, surrounding_text: str = "") -> dict:
 
 # 测试
 if __name__ == "__main__":
-    result = analyze_chart("D:\chrome_download\下载.png", surrounding_text="")
+    result = analyze_chart(r"D:\chrome_download\下载.png", surrounding_text="")
     print(json.dumps(result, ensure_ascii=False, indent=2))

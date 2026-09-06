@@ -65,18 +65,11 @@ async def search_text(
 ):
     """
     向量语义检索：使用查询文本的 Embedding 在 pgvector 中搜索最相似的文本块。
-    目前需要 Embedding 模型可用；mock 模式下返回空结果。
+    需要 Embedding 模型可用。
     """
     from text_pipeline import _get_embedding_model
 
     model = _get_embedding_model()
-    if model is None:
-        index_name = f"pdf_{file_id}_text" if file_id else "pdf_text_global"
-        return JSONResponse(content={
-            "results": [],
-            "message": "Embedding 模型未加载或处于 mock 模式，无法执行检索",
-        })
-
     # 生成查询向量
     query_vector = model.encode([q], normalize_embeddings=True)[0].tolist()
 
@@ -119,4 +112,4 @@ async def get_text_chunks(
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "mock_mode": storage.relational.__class__.__name__.startswith("Mock")}
+    return {"status": "ok"}

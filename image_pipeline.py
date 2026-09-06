@@ -98,6 +98,11 @@ def process_image_block(block: ContentBlock, file_id: str) -> Optional[ContentBl
     if category == ImageCategory.ICON:
         return block
 
+    # 抽取验证阶段关闭 MinIO 时跳过图片上传。
+    if not app_config.minio.enabled:
+        block.image_url = ""
+        return block
+
     # 上传到 MinIO
     bucket = app_config.minio.bucket_images
     ext = _guess_extension(image_data)

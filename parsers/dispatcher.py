@@ -1,7 +1,7 @@
 # parsers/dispatcher.py
 from typing import Optional, List
 from parsers.base import ParserStrategy
-from parsers.cloud_mineru import CloudMineruParser, MockCloudMineruParser
+from parsers.cloud_mineru import CloudMineruParser
 from parsers.pymupdf_parser import PyMuPDFParser
 from config import app_config
 from models import ContentBlock
@@ -16,23 +16,18 @@ class PDFParser:
     def __init__(
             self,
             backend: Optional[str] = None,
-            mock: bool = False,
     ):
         """
         Args:
             backend: 'cloudmineru' | 'pymupdf'，默认从 config 读取
-            mock: 是否使用 mock 模式（仅 cloudmineru 支持）
         """
         self.backend = backend or app_config.parser.parser_backend
-        self.mock = mock
         self._strategy: Optional[ParserStrategy] = None
 
     @property
     def strategy(self) -> ParserStrategy:
         if self._strategy is None:
-            if self.mock:
-                self._strategy = MockCloudMineruParser()
-            elif self.backend == "pymupdf":
+            if self.backend == "pymupdf":
                 self._strategy = PyMuPDFParser(
                     extract_images=app_config.parser.pymupdf_extract_images,
                     extract_tables=app_config.parser.pymupdf_extract_tables,
