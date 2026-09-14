@@ -12,7 +12,9 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
+from urllib.parse import urlparse
 
+import httpx
 from openai import OpenAI
 
 from batch_processor import current_processing_versions
@@ -27,12 +29,13 @@ from models import (
     PolicyReviewStatus,
     ReviewItem,
 )
-from policy_storage import (
+from policy.storage import (
     create_policy_extraction_run,
     delete_clause_outputs,
     get_policy_clause,
     get_policy_extraction_items,
     get_policy_extraction_run,
+    get_policy_process_run,
     insert_policy_entity,
     insert_policy_relation,
     insert_review_item,
@@ -46,7 +49,7 @@ MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (2, 4, 8)
 HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("POLICY_EXTRACTION_HEARTBEAT_SECONDS", "1800"))
 CONFIDENCE_THRESHOLD = 0.85
-PROMPT_VERSION = "policy-extract-v1"
+PROMPT_VERSION = "policy-extract-v2"
 RULE_VERSION = "policy-rules-v1"
 SCHEMA_VERSION = "policy-schema-v1"
 RULE_ONLY_PROMPT_VERSION = "policy-rule-only-v1"
@@ -60,6 +63,19 @@ _ENTITY_ALIASES = {
     "matter": PolicyEntityType.MATTER,
     "事项": PolicyEntityType.MATTER,
     "办理事项": PolicyEntityType.MATTER,
+    "process": PolicyEntityType.PROCESS,
+    "流程": PolicyEntityType.PROCESS,
+    "办事流程": PolicyEntityType.PROCESS,
+    "step": PolicyEntityType.STEP,
+    "步骤": PolicyEntityType.STEP,
+    "流程步骤": PolicyEntityType.STEP,
+    "role": PolicyEntityType.ROLE,
+    "角色": PolicyEntityType.ROLE,
+    "办理角色": PolicyEntityType.ROLE,
+    "责任人": PolicyEntityType.ROLE,
+    "location": PolicyEntityType.LOCATION,
+    "地点": PolicyEntityType.LOCATION,
+    "办理地点": PolicyEntityType.LOCATION,
     "department": PolicyEntityType.DEPARTMENT,
     "部门": PolicyEntityType.DEPARTMENT,
     "责任部门": PolicyEntityType.DEPARTMENT,
@@ -76,11 +92,27 @@ _ENTITY_ALIASES = {
     "approval_action": PolicyEntityType.APPROVAL_ACTION,
     "审批动作": PolicyEntityType.APPROVAL_ACTION,
     "审批": PolicyEntityType.APPROVAL_ACTION,
+    "condition": PolicyEntityType.CONDITION,
+    "条件": PolicyEntityType.CONDITION,
+    "前置条件": PolicyEntityType.CONDITION,
+    "outcome": PolicyEntityType.OUTCOME,
+    "结果": PolicyEntityType.OUTCOME,
+    "办理结果": PolicyEntityType.OUTCOME,
 }
 
 _RELATION_ALIASES = {
     "applies_to": PolicyRelationType.APPLIES_TO,
     "适用于": PolicyRelationType.APPLIES_TO,
+    "has_process": PolicyRelationType.HAS_PROCESS,
+    "包含流程": PolicyRelationType.HAS_PROCESS,
+    "has_step": PolicyRelationType.HAS_STEP,
+    "包含步骤": PolicyRelationType.HAS_STEP,
+    "next_step": PolicyRelationType.NEXT_STEP,
+    "下一步": PolicyRelationType.NEXT_STEP,
+    "performed_by": PolicyRelationType.PERFORMED_BY,
+    "由角色执行": PolicyRelationType.PERFORMED_BY,
+    "performed_at": PolicyRelationType.PERFORMED_AT,
+    "在地点办理": PolicyRelationType.PERFORMED_AT,
     "handled_by": PolicyRelationType.HANDLED_BY,
     "由部门办理": PolicyRelationType.HANDLED_BY,
     "requires_material": PolicyRelationType.REQUIRES_MATERIAL,
@@ -91,6 +123,14 @@ _RELATION_ALIASES = {
     "期限": PolicyRelationType.HAS_DEADLINE,
     "requires_approval": PolicyRelationType.REQUIRES_APPROVAL,
     "需要审批": PolicyRelationType.REQUIRES_APPROVAL,
+    "has_precondition": PolicyRelationType.HAS_PRECONDITION,
+    "前置条件": PolicyRelationType.HAS_PRECONDITION,
+    "routes_to": PolicyRelationType.ROUTES_TO,
+    "流转至": PolicyRelationType.ROUTES_TO,
+    "produces": PolicyRelationType.PRODUCES,
+    "产生": PolicyRelationType.PRODUCES,
+    "exception_to": PolicyRelationType.EXCEPTION_TO,
+    "异常转至": PolicyRelationType.EXCEPTION_TO,
     "cites": PolicyRelationType.CITES,
     "引用": PolicyRelationType.CITES,
     "based_on": PolicyRelationType.BASED_ON,
@@ -256,54 +296,81 @@ def _parse_json_response(raw: str) -> dict[str, Any]:
     return parsed
 
 
+def build_extraction_prompt(clause: dict[str, Any], parent_text: str = "") -> str:
+    """构造面向制度办事流程的受控 JSON 抽取提示词。"""
+    parent_context_chars = max(0, app_config.llm.parent_context_chars)
+    return f"""从制度条款中抽取办事流程实体和关系，只输出合法 JSON，不解释。
+
+实体类型：matter, process, step, role, department, location, material, condition, amount, deadline, outcome。
+关系类型：has_process, has_step, next_step, performed_by, handled_by, performed_at, requires_material, has_precondition, requires_approval, has_amount, has_deadline, produces, exception_to。
+
+规则：
+1. 只抽取原文明示事实，不补写常识；evidence_text 必须是原文连续片段。
+2. matter 保留原因、条件和办理事项；step 是具体动作；process 仅用于明确命名的流程或程序。
+3. performed_by：step/process -> role/department；performed_at：step/process -> location；requires_material：step/process -> material。
+4. next_step：step -> step，且原文必须明确先后顺序。
+5. 禁止自环；subject_index 和 object_index 不能相同。没有明确证据的实体或关系不要输出。
+
+JSON：
+{{"entities":[{{"type":"","name":"","raw_text":"","evidence_text":"","confidence":0.0}}],
+"relations":[{{"type":"","subject_index":0,"object_index":1,"evidence_text":"","confidence":0.0}}]}}
+
+章节路径：{" / ".join(clause.get("chapter_path") or [])}
+条款：{clause.get("raw_text", "")}
+父条款上下文：{parent_text[:parent_context_chars]}
+"""
+
+
+def is_local_llm_endpoint(api_url: str) -> bool:
+    """判断 LLM 地址是否指向本机回环地址。"""
+    try:
+        hostname = urlparse(str(api_url or "")).hostname
+    except ValueError:
+        return False
+    return str(hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def create_llm_client(api_url: str, api_key: str) -> OpenAI:
+    """创建 LLM 客户端；本机服务不继承系统代理，远程服务维持默认行为。"""
+    options: dict[str, Any] = {"base_url": api_url, "api_key": api_key}
+    if is_local_llm_endpoint(api_url):
+        # 本机 Ollama 不应经由企业或系统代理转发，否则可能得到 502。
+        options["http_client"] = httpx.Client(trust_env=False)
+    return OpenAI(**options)
+
+
 def _call_llm(clause: dict[str, Any], parent_text: str = "") -> dict[str, Any]:
     """调用一次模型，格式错误时再用修复提示重试一次。"""
     if not app_config.llm.api_key:
         raise PermanentExtractionError("LLM_API_KEY 未配置，无法启动实体关系抽取")
-    client = OpenAI(base_url=app_config.llm.api_url, api_key=app_config.llm.api_key)
-    prompt = f"""请从下面的制度条款中抽取实体和关系，只返回JSON，不要解释。
-
-允许的实体类型：matter, department, audience, material, amount, deadline, approval_action。
-允许的关系类型：applies_to, handled_by, requires_material, has_amount, has_deadline,
-requires_approval, cites, based_on, revises, abolishes, replaces。
-
-规则：
-1. 不得补写原文没有的事实；没有证据就不要抽取。
-2. evidence_text 必须是原文连续片段。
-3. relation 的 subject_index/object_index 是 entities 数组的0起始下标；制度引用可只填 target_text。
-4. amount/deadline 的具体数值放到 normalized_value 对象中。
-
-返回格式：
-{{"entities":[{{"type":"matter","name":"","raw_text":"","normalized_value":{{}},"evidence_text":"","confidence":0.0}}],
-"relations":[{{"type":"requires_material","subject_index":0,"object_index":1,"target_text":"","evidence_text":"","confidence":0.0}}]}}
-
-章节路径：{" / ".join(clause.get("chapter_path") or [])}
-条款：{clause.get("raw_text", "")}
-必要的父条款上下文：{parent_text[:1500]}
-"""
-    response = client.chat.completions.create(
-        model=app_config.llm.model,
-        messages=[
-            {"role": "system", "content": "你是制度条款信息抽取器，只输出合法JSON。"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        max_tokens=2500,
-    )
-    raw = response.choices[0].message.content or ""
+    client = create_llm_client(app_config.llm.api_url, app_config.llm.api_key)
+    prompt = build_extraction_prompt(clause, parent_text)
     try:
-        return _parse_json_response(raw)
-    except PermanentExtractionError:
-        repair = client.chat.completions.create(
+        response = client.chat.completions.create(
             model=app_config.llm.model,
             messages=[
-                {"role": "system", "content": "只修复JSON格式，不改变任何事实；只输出JSON。"},
-                {"role": "user", "content": f"请把以下输出修复为合法JSON：\n{raw}"},
+                {"role": "system", "content": "你是制度条款信息抽取器，只输出合法JSON。"},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.0,
             max_tokens=2500,
         )
-        return _parse_json_response(repair.choices[0].message.content or "")
+        raw = response.choices[0].message.content or ""
+        try:
+            return _parse_json_response(raw)
+        except PermanentExtractionError:
+            repair = client.chat.completions.create(
+                model=app_config.llm.model,
+                messages=[
+                    {"role": "system", "content": "只修复JSON格式，不改变任何事实；只输出JSON。"},
+                    {"role": "user", "content": f"请把以下输出修复为合法JSON：\n{raw}"},
+                ],
+                temperature=0.0,
+                max_tokens=2500,
+            )
+            return _parse_json_response(repair.choices[0].message.content or "")
+    finally:
+        client.close()
 
 
 def _llm_is_configured() -> bool:
@@ -671,6 +738,7 @@ def run_policy_extraction(run_id: str, resume: bool = False) -> dict[str, Any]:
 def create_and_run_policy_extraction(
     batch_id: str,
     limit: Optional[int] = None,
+    process_run_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """为批次创建新的抽取版本并立即执行。"""
     if limit is not None and limit < 1:
@@ -691,8 +759,24 @@ def create_and_run_policy_extraction(
         rule_version=RULE_VERSION,
         schema_version=SCHEMA_VERSION,
         limit=limit,
+        process_run_id=process_run_id,
     )
     return run_policy_extraction(run_id)
+
+
+def create_and_run_process_policy_extraction(
+    process_run_id: str,
+    limit: Optional[int] = None,
+) -> dict[str, Any]:
+    """只从指定流程判定运行的合格条款创建实体关系抽取。"""
+    process_run = get_policy_process_run(process_run_id)
+    if not process_run:
+        raise ValueError(f"流程判定运行不存在: {process_run_id}")
+    return create_and_run_policy_extraction(
+        str(process_run["batch_id"]),
+        limit=limit,
+        process_run_id=process_run_id,
+    )
 
 
 def get_policy_extraction_status(run_id: str) -> dict[str, Any]:

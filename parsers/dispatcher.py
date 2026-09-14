@@ -2,6 +2,7 @@
 from typing import Optional, List
 from parsers.base import ParserStrategy
 from parsers.cloud_mineru import CloudMineruParser
+from parsers.mineru import MinerUParser
 from parsers.pymupdf_parser import PyMuPDFParser
 from config import app_config
 from models import ContentBlock
@@ -19,7 +20,7 @@ class PDFParser:
     ):
         """
         Args:
-            backend: 'cloudmineru' | 'pymupdf'，默认从 config 读取
+            backend: 'mineru' | 'cloudmineru' | 'pymupdf'，默认从 config 读取
         """
         self.backend = backend or app_config.parser.parser_backend
         self._strategy: Optional[ParserStrategy] = None
@@ -27,13 +28,17 @@ class PDFParser:
     @property
     def strategy(self) -> ParserStrategy:
         if self._strategy is None:
-            if self.backend == "pymupdf":
+            if self.backend == "mineru":
+                self._strategy = MinerUParser()
+            elif self.backend == "pymupdf":
                 self._strategy = PyMuPDFParser(
                     extract_images=app_config.parser.pymupdf_extract_images,
                     extract_tables=app_config.parser.pymupdf_extract_tables,
                 )
-            else:  # cloudmineru
+            elif self.backend == "cloudmineru":
                 self._strategy = CloudMineruParser(mode=app_config.cloudmineru.mode)
+            else:
+                raise ValueError(f"不支持的 PDF 解析后端: {self.backend}")
         return self._strategy
 
     def parse(self, file_path: str, page_count: int = 0) -> List[ContentBlock]:

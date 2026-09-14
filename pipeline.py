@@ -25,7 +25,7 @@ from image_pipeline import process_image_blocks
 from table_pipeline import process_table_blocks
 from metadata_service import (
     record_file_start, record_file_done, record_file_failed,
-    record_block_storage,
+    record_block_storage, choose_display_file_name, update_file_name,
 )
 from storage_adapter import storage
 
@@ -210,7 +210,11 @@ def _convert_parsed_data_to_blocks(
 
     return blocks
     '''
-def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
+def process_pdf(
+    file_path: str,
+    page_count: int = 0,
+    source_file_name: str | None = None,
+) -> ProcessingResult:
     t_start = time.time()
     errors: list[str] = []
     file_id = ""
@@ -226,7 +230,7 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
 
         with open(file_path, "rb") as f:
             file_data = f.read()
-        file_name = file_path.replace("\\", "/").split("/")[-1]
+        file_name = source_file_name or file_path.replace("\\", "/").split("/")[-1]
 
         # ---- Step 2: 记录文件开始处理 ----
         file_id = record_file_start(file_name, file_data, page_count)
@@ -298,11 +302,19 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         except Exception as e:
             errors.append(f"matedata获取失败: {traceback.format_exc()}")
 
+        resolved_file_name = choose_display_file_name(
+            file_name,
+            str(metadata.get("title") or ""),
+        )
+        if resolved_file_name and resolved_file_name != file_name:
+            file_name = resolved_file_name
+            update_file_name(file_id, file_name)
+
         # 规章制度单独保存文档和条款结构。此阶段只使用解析块和确定性规则，
         # 实体、关系抽取由独立命令执行，避免大模型失败影响 PDF 基础处理。
         if doc_type == "policy_regulation":
             try:
-                from policy_pipeline import structure_policy_document
+                from policy.pipeline import structure_policy_document
 
                 structure_result = structure_policy_document(
                     file_id=file_id,
@@ -352,7 +364,9 @@ def process_pdf(file_path: str, page_count: int = 0) -> ProcessingResult:
         form_stored = 0
         uncertain_count = 0
         try:
-            dt_stored, form_stored, uncertain_count = process_table_blocks(blocks, file_id)
+            dt_stored, form_stored, uncertain_count = process_table_blocks(
+                blocks, file_id, file_name=file_name
+            )
         except Exception as e:
             errors.append(f"表格管线失败: {traceback.format_exc()}")
 

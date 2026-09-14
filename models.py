@@ -278,29 +278,49 @@ class PolicyExtractionItemStatus(str, Enum):
 
 
 class PolicyEntityType(str, Enum):
-    """首期制度实体类型白名单。"""
+    """制度办事流程图谱的实体类型白名单。"""
     MATTER = "matter"
+    PROCESS = "process"
+    STEP = "step"
+    ROLE = "role"
+    LOCATION = "location"
     DEPARTMENT = "department"
     AUDIENCE = "audience"
     MATERIAL = "material"
     AMOUNT = "amount"
     DEADLINE = "deadline"
     APPROVAL_ACTION = "approval_action"
+    CONDITION = "condition"
+    OUTCOME = "outcome"
 
 
 class PolicyRelationType(str, Enum):
-    """首期制度关系类型白名单。"""
+    """制度办事流程图谱的关系类型白名单。"""
     APPLIES_TO = "applies_to"
+    HAS_PROCESS = "has_process"
+    HAS_STEP = "has_step"
+    NEXT_STEP = "next_step"
+    PERFORMED_BY = "performed_by"
+    PERFORMED_AT = "performed_at"
     HANDLED_BY = "handled_by"
     REQUIRES_MATERIAL = "requires_material"
     HAS_AMOUNT = "has_amount"
     HAS_DEADLINE = "has_deadline"
     REQUIRES_APPROVAL = "requires_approval"
+    HAS_PRECONDITION = "has_precondition"
+    ROUTES_TO = "routes_to"
+    PRODUCES = "produces"
+    EXCEPTION_TO = "exception_to"
     CITES = "cites"
     BASED_ON = "based_on"
     REVISES = "revises"
     ABOLISHES = "abolishes"
     REPLACES = "replaces"
+
+
+class PolicyDocumentRelationType(str, Enum):
+    """制度文件之间关系的首期白名单。"""
+    ABOLISHES = "abolishes"
 
 
 class PolicyReviewStatus(str, Enum):
@@ -342,6 +362,25 @@ class PolicyDocument(BaseModel):
     parse_quality: float = 0.0
     structure_status: PolicyStructureStatus = PolicyStructureStatus.PENDING
     structure_version: str = ""
+
+
+class PolicyDocumentRelation(BaseModel):
+    """制度文件废止候选及其人工审核结论。"""
+    relation_id: str
+    source_policy_id: str
+    target_policy_id: Optional[str] = None
+    target_title: str = ""
+    target_doc_number: str = ""
+    relation_type: PolicyDocumentRelationType = PolicyDocumentRelationType.ABOLISHES
+    effective_date: Optional[str] = None
+    evidence_clause_id: str
+    evidence_text: str = ""
+    page_start: int = 0
+    page_end: int = 0
+    confidence: float = 0.0
+    review_status: PolicyReviewStatus = PolicyReviewStatus.PENDING
+    reviewer: str = ""
+    review_note: str = ""
 
 
 class PolicyClause(BaseModel):

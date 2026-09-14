@@ -13,11 +13,112 @@ from models import (
     ContentBlock, BlockType, TableCategory, TableStructure,
 )
 from storage_adapter import storage
+from table_catalog import record_table_catalog
 
 
 # ============================================================
 # HTML 表格解析
 # ============================================================
+
+def _parse_span(value: object) -> int:
+    """将 HTML 的 rowspan/colspan 转成至少为 1 的整数。"""
+    try:
+        return max(int(str(value)), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _expand_table_grid(table) -> tuple[list[list[str]], list[list[bool]]]:
+    """展开 rowspan 和 colspan，返回单元格网格及其 th 标记。"""
+    grid: list[list[str]] = []
+    header_grid: list[list[bool]] = []
+
+    for row_index, tr in enumerate(table.find_all("tr")):
+        while len(grid) <= row_index:
+            grid.append([])
+            header_grid.append([])
+
+        col_index = 0
+        cells = tr.find_all(["th", "td"], recursive=False)
+        for cell in cells:
+            while col_index < len(grid[row_index]) and grid[row_index][col_index] != "":
+                col_index += 1
+
+            text = cell.get_text(" ", strip=True)
+            rowspan = _parse_span(cell.get("rowspan", 1))
+            colspan = _parse_span(cell.get("colspan", 1))
+            is_header = cell.name == "th"
+
+            for row_offset in range(rowspan):
+                target_row = row_index + row_offset
+                while len(grid) <= target_row:
+                    grid.append([])
+                    header_grid.append([])
+                required_width = col_index + colspan
+                if len(grid[target_row]) < required_width:
+                    grid[target_row].extend([""] * (required_width - len(grid[target_row])))
+                    header_grid[target_row].extend([False] * (required_width - len(header_grid[target_row])))
+
+                for col_offset in range(colspan):
+                    target_col = col_index + col_offset
+                    grid[target_row][target_col] = text
+                    header_grid[target_row][target_col] = is_header
+
+            col_index += colspan
+
+    col_count = max((len(row) for row in grid), default=0)
+    for row, header_row in zip(grid, header_grid):
+        row.extend([""] * (col_count - len(row)))
+        header_row.extend([False] * (col_count - len(header_row)))
+    return grid, header_grid
+
+
+def _looks_like_data_row(row: list[str]) -> bool:
+    """用数值占比识别无 th 标记表格的首条数据行。"""
+    values = [value.strip() for value in row if value.strip()]
+    if not values:
+        return False
+
+    numeric_count = sum(1 for value in values if _is_float(value))
+    return numeric_count >= max(1, len(values) // 2)
+
+
+def _infer_header_row_count(
+    grid: list[list[str]], header_grid: list[list[bool]]
+) -> int:
+    """确定表头占用的连续行数，兼容 MinerU 仅输出 td 的表格。"""
+    if not grid:
+        return 0
+
+    marked_header_rows = 0
+    for header_row in header_grid:
+        if any(header_row):
+            marked_header_rows += 1
+        else:
+            break
+    if marked_header_rows:
+        return marked_header_rows
+
+    for row_index, row in enumerate(grid):
+        if row_index > 0 and _looks_like_data_row(row):
+            return row_index
+
+    # 纯文本数据表无法仅凭内容可靠区分多级表头，保留原有的首行表头策略。
+    return 1 if len(grid) > 1 else 0
+
+
+def _build_header_paths(header_rows: list[list[str]], col_count: int) -> list[str]:
+    """合并每一列的多级表头，并去除 rowspan 带来的重复名称。"""
+    headers: list[str] = []
+    for col_index in range(col_count):
+        parts: list[str] = []
+        for row in header_rows:
+            value = row[col_index].strip()
+            if value and (not parts or parts[-1] != value):
+                parts.append(value)
+        headers.append(" / ".join(parts))
+    return headers
+
 
 def parse_table_html(html: str) -> Optional[TableStructure]:
     """从 HTML 字符串解析表格结构，返回 TableStructure"""
@@ -27,59 +128,22 @@ def parse_table_html(html: str) -> Optional[TableStructure]:
         if not table:
             return None
 
-        rows = table.find_all("tr")
-        if not rows:
+        grid, header_grid = _expand_table_grid(table)
+        if not grid:
             return None
-
-        # 解析所有行
-        all_rows: list[list[str]] = []
-        has_header = False
-
-        for ri, tr in enumerate(rows):
-            cells = tr.find_all(["th", "td"])
-            row_data = [cell.get_text(strip=True) for cell in cells]
-            if row_data:
-                all_rows.append(row_data)
-            # 第一行含 th 标签视为列头
-            if ri == 0 and tr.find("th"):
-                has_header = True
-
-        if not all_rows:
-            return None
-
-        # 列数 = 最大列数
-        col_count = max(len(r) for r in all_rows)
-        # 补齐短行
-        for r in all_rows:
-            while len(r) < col_count:
-                r.append("")
 
         # 检测聚合行关键词
         agg_keywords = ["合计", "小计", "总计", "平均", "总和", "汇总"]
 
-        # ========== 修改开始 ==========
-        # 分离列头和数据行
-        if has_header and len(all_rows) > 1:
-            headers = all_rows[0]
-            data_rows = all_rows[1:]
-        else:
-            # 没有 th 标签时，尝试启发式判断：第一行是否像表头
-            first_row = all_rows[0]
-            # 如果第一行包含聚合关键词，视为数据行（不应作为表头）
-            is_agg_row = any(any(kw in cell for cell in first_row) for kw in agg_keywords)
-            # 如果行数 > 1 且第一行不是聚合行，则将第一行作为表头
-            if len(all_rows) > 1 and not is_agg_row:
-                headers = first_row
-                data_rows = all_rows[1:]
-            else:
-                headers = []
-                data_rows = all_rows
-        # ========== 修改结束 ==========
+        col_count = len(grid[0])
+        header_row_count = _infer_header_row_count(grid, header_grid)
+        headers = _build_header_paths(grid[:header_row_count], col_count)
+        data_rows = grid[header_row_count:]
 
         # 检测聚合行（数据行中可能包含聚合）
         has_agg = any(
             any(kw in cell for cell in row)
-            for row in all_rows
+            for row in grid
             for kw in agg_keywords
         )
 
@@ -182,6 +246,20 @@ def _is_date(s: str) -> bool:
     return any(re.match(p, s) for p in patterns)
 
 
+def _coerce_value_for_storage(value: str, column_type: str) -> str | int | float | None:
+    """按推断列类型转换单元格值，使带千分位的数字可写入 PostgreSQL。"""
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    normalized_number = cleaned.replace(",", "").replace("，", "")
+    if column_type in ("INTEGER", "BIGINT"):
+        return int(normalized_number)
+    if column_type == "DOUBLE PRECISION":
+        return float(normalized_number)
+    return value
+
+
 # ============================================================
 # 列名处理辅助函数（新增）
 # ============================================================
@@ -261,6 +339,102 @@ def _sanitize_col_name(name: str) -> str:
     return name.lower()
 
 
+def build_table_column_definitions(structure: TableStructure) -> list[dict[str, str]]:
+    """生成数据库列名与展示表头的映射，供入库和 API 复用。"""
+    raw_headers = structure.headers if structure.headers else [
+        f"col_{i}" for i in range(structure.col_count)
+    ]
+    cleaned_headers = [_sanitize_col_name(header) for header in raw_headers]
+
+    seen: dict[str, int] = {}
+    deduped_headers: list[str] = []
+    for header in cleaned_headers:
+        if header in seen:
+            seen[header] += 1
+            deduped_headers.append(f"{header}_{seen[header]}")
+        else:
+            seen[header] = 1
+            deduped_headers.append(header)
+
+    if app_config.column_naming_style == "original":
+        final_headers = deduped_headers
+    else:
+        final_headers = [
+            header if _is_valid_english_identifier(header) else f"col_{index + 1}"
+            for index, header in enumerate(deduped_headers)
+        ]
+
+    column_types = _infer_column_types(structure.rows, structure.col_count)
+    return [
+        {
+            "key": key,
+            "label": label,
+            "data_type": data_type,
+        }
+        for key, label, data_type in zip(final_headers, raw_headers, column_types)
+    ]
+
+
+def _table_caption(block: ContentBlock) -> str:
+    """从 MinerU 原始块中读取表格 caption。"""
+    raw = block.raw if isinstance(block.raw, dict) else {}
+    caption = raw.get("table_caption")
+    if isinstance(caption, list):
+        return " ".join(str(item).strip() for item in caption if str(item).strip())
+    return str(caption or "").strip()
+
+
+def _split_table_heading(value: str) -> tuple[str, str]:
+    """拆分 X010102 经费数额形式的表格编号和名称。"""
+    normalized = " ".join(value.split())
+    match = re.match(r"^([A-Za-z]\d{6})\s+(.+)$", normalized)
+    if not match:
+        return "", normalized
+    return match.group(1), match.group(2).strip()
+
+
+def _heading_identity(block: ContentBlock) -> tuple[str, str] | None:
+    """提取可作为表格名称来源的标题块。"""
+    if block.type != BlockType.TEXT:
+        return None
+    text = " ".join(block.content.split())
+    if not text:
+        return None
+    raw = block.raw if isinstance(block.raw, dict) else {}
+    try:
+        is_heading = int(raw.get("text_level", 99)) <= 2
+    except (TypeError, ValueError):
+        is_heading = False
+    if re.match(r"^[A-Za-z]\d{6}\s+.+$", text) or is_heading:
+        return _split_table_heading(text)
+    return None
+
+
+def resolve_table_identity(blocks: list[ContentBlock], table_index: int) -> tuple[str, str]:
+    """按 caption、同页相邻标题的优先级确定表格编号和名称。"""
+    block = blocks[table_index]
+    caption = _table_caption(block)
+    if caption:
+        return _split_table_heading(caption)
+
+    # 常见版式是标题在表格之前，优先使用同页最近的前方标题。
+    for candidate in reversed(blocks[:table_index]):
+        if candidate.page_num != block.page_num:
+            continue
+        identity = _heading_identity(candidate)
+        if identity:
+            return identity
+
+    # 部分解析器会把相邻标题排在表格之后，作为同页回退来源。
+    for candidate in blocks[table_index + 1:]:
+        if candidate.page_num != block.page_num:
+            continue
+        identity = _heading_identity(candidate)
+        if identity:
+            return identity
+    return "", ""
+
+
 def store_data_table(
     file_id: str, block_id: str, structure: TableStructure, page_num: int
 ) -> str:
@@ -277,44 +451,21 @@ def store_data_table(
 
     naming_style = app_config.column_naming_style  # 'original' 或 'normalized'
 
-    # 1. 清理列名（基础清洗）
-    raw_headers = structure.headers if structure.headers else [
-        f"col_{i}" for i in range(structure.col_count)
-    ]
-    cleaned_headers = [_sanitize_col_name(h) for h in raw_headers]
+    column_definitions = build_table_column_definitions(structure)
+    final_headers = [column["key"] for column in column_definitions]
+    col_types = [column["data_type"] for column in column_definitions]
 
-    # 去重处理：重名列追加 _2, _3...
-    seen: dict[str, int] = {}
-    deduped_headers = []
-    for h in cleaned_headers:
-        if h in seen:
-            seen[h] += 1
-            deduped_headers.append(f"{h}_{seen[h]}")
-        else:
-            seen[h] = 1
-            deduped_headers.append(h)
-
-    # 2. 根据命名模式生成最终列名
-    need_mapping = False
-    if naming_style == 'original':
-        final_headers = deduped_headers
-    else:  # 'normalized'
-        final_headers = []
-        for name in deduped_headers:
-            if _is_valid_english_identifier(name):
-                final_headers.append(name)
-            else:
-                if not need_mapping:
-                    need_mapping = True
-                final_headers.append(f"col_{len(final_headers) + 1}")
-        if need_mapping:
+    # normalized 模式下保留原始表头映射，便于查询结果还原展示名称。
+    if naming_style != 'original':
+        raw_headers = [column["label"] for column in column_definitions]
+        if any(
+            not _is_valid_english_identifier(_sanitize_col_name(header))
+            for header in raw_headers
+        ):
             # 存储映射到 metadata_table
             _ensure_metadata_table()
             table_name = f"pdf_{file_id}_tbl_{block_id}"
-            _save_column_mapping(table_name, final_headers, deduped_headers)
-
-    # 3. 推断列类型
-    col_types = _infer_column_types(structure.rows, structure.col_count)
+            _save_column_mapping(table_name, final_headers, raw_headers)
 
     table_name = f"pdf_{file_id}_tbl_{block_id}"
 
@@ -343,8 +494,14 @@ def store_data_table(
     for ri, row in enumerate(structure.rows):
         while len(row) < structure.col_count:
             row.append("")
-        # 空字符串转为 None，其他原样保留（数据库会自动转换类型）
-        row_values = [None if val == "" else val for val in row[:structure.col_count]]
+        # 数值列先转为 Python 数值，避免 PostgreSQL 无法解析 28,003 等千分位写法。
+        row_values = [
+            _coerce_value_for_storage(value, column_type)
+            for value, column_type in zip(
+                row[:structure.col_count],
+                col_types,
+            )
+        ]
         insert_rows.append([page_num, ri] + row_values)
 
     storage.relational.insert_rows(table_name, insert_cols, insert_rows)
@@ -395,33 +552,44 @@ def store_form(
 # ============================================================
 
 def process_table_blocks(
-    blocks: list[ContentBlock], file_id: str
+    blocks: list[ContentBlock], file_id: str, file_name: str = ""
 ) -> tuple[int, int, int]:
     """
     表格块处理主入口。
     根据 classifier 的分类结果，将数据表和表单分别路由到对应的存储。
     返回：(data_tables_stored, forms_stored, uncertain_count)
     """
-    table_blocks = [
-        b for b in blocks
-        if b.type == BlockType.TABLE and b.table_category is not None
-    ]
-
     dt_count = 0
     form_count = 0
     uncertain_count = 0
 
-    for block in table_blocks:
+    for block_index, block in enumerate(blocks):
+        if block.type != BlockType.TABLE or block.table_category is None:
+            continue
         html = block.table_html or block.content
         structure = parse_table_html(html)
         if structure is None:
             continue
+
+        table_code, table_title = resolve_table_identity(blocks, block_index)
 
         if block.table_category == TableCategory.DATA_TABLE:
             table_name = store_data_table(
                 file_id, block.block_id, structure, block.page_num
             )
             if table_name:
+                record_table_catalog(
+                    file_id=file_id,
+                    file_name=file_name,
+                    block=block,
+                    table_code=table_code,
+                    table_title=table_title,
+                    table_category=block.table_category.value,
+                    storage_target="pg_relational",
+                    storage_location=table_name,
+                    columns=build_table_column_definitions(structure),
+                    row_count=len(structure.rows),
+                )
                 dt_count += 1
 
         elif block.table_category == TableCategory.FORM:
@@ -429,6 +597,21 @@ def process_table_blocks(
                 file_id, block.block_id, structure, block.page_num
             )
             if doc_id:
+                record_table_catalog(
+                    file_id=file_id,
+                    file_name=file_name,
+                    block=block,
+                    table_code=table_code,
+                    table_title=table_title,
+                    table_category=block.table_category.value,
+                    storage_target="pg_jsonb",
+                    storage_location=doc_id,
+                    columns=[
+                        {"key": "field", "label": "字段", "data_type": "TEXT"},
+                        {"key": "value", "label": "值", "data_type": "TEXT"},
+                    ],
+                    row_count=len(structure.rows),
+                )
                 form_count += 1
 
         else:

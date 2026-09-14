@@ -1,6 +1,6 @@
 """规章制度的文档元数据与条款结构化管线。
 
-本阶段只处理结构，不调用大模型。实体和关系由 policy_extractor.py 单独处理。
+本阶段只处理结构，不调用大模型。实体和关系由 policy.extraction 单独处理。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from models import BlockType, ContentBlock, PolicyClause, PolicyStructureStatus, ReviewItem
-from policy_storage import (
+from policy.storage import (
     insert_review_item,
     mark_policy_structure_failed,
     replace_policy_clauses,
@@ -341,9 +341,31 @@ def structure_policy_document(
                     payload={"parse_quality": quality, "structure_version": structure_version},
                 )
             )
+        try:
+            # 索引失败不影响结构化结果，后续可通过批次重建命令恢复。
+            from policy.retrieval import sync_policy_clause_index
+
+            indexed_clause_count = sync_policy_clause_index(policy_id)
+            index_status = "succeeded"
+            index_error = ""
+        except Exception as exc:
+            indexed_clause_count = 0
+            index_status = "failed"
+            index_error = str(exc)
+            insert_review_item(
+                ReviewItem(
+                    review_id=f"review_{uuid.uuid4().hex}",
+                    policy_id=policy_id,
+                    issue_type="policy_clause_index_error",
+                    description=f"条款索引同步失败: {index_error[:1000]}",
+                    payload={"structure_version": structure_version},
+                )
+            )
         return {
             "policy_id": policy_id,
             "clause_count": len(clauses),
+            "indexed_clause_count": indexed_clause_count,
+            "index_status": index_status,
             "parse_quality": quality,
             "structure_version": structure_version,
             "status": PolicyStructureStatus.SUCCEEDED.value,

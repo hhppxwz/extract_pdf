@@ -13,7 +13,7 @@ from models import (
     PolicyRelationType,
     PolicyReviewStatus,
 )
-from policy_storage import (
+from policy.storage import (
     get_policy_clause,
     get_policy_extraction_run,
     get_policy_review_candidate,
@@ -24,6 +24,13 @@ from policy_storage import (
 
 
 GUIDELINE_VERSION = "manual-annotation-v1"
+_DOCUMENT_RELATION_TYPES = {
+    PolicyRelationType.CITES,
+    PolicyRelationType.BASED_ON,
+    PolicyRelationType.REVISES,
+    PolicyRelationType.ABOLISHES,
+    PolicyRelationType.REPLACES,
+}
 
 
 def _candidate_id(candidate_kind: PolicyCandidateKind, candidate: dict[str, Any]) -> str:
@@ -97,9 +104,20 @@ def _validate_label_data(
         if not relation_type:
             raise ValueError("关系修正或补充必须填写 relation_type")
         try:
-            PolicyRelationType(relation_type)
+            parsed_relation_type = PolicyRelationType(relation_type)
         except ValueError as exc:
             raise ValueError("relation_type 不在允许范围内") from exc
+        if parsed_relation_type in _DOCUMENT_RELATION_TYPES:
+            if not (
+                str(label_data.get("target_policy_id") or "").strip()
+                or str(label_data.get("target_text") or "").strip()
+            ):
+                raise ValueError("制度关系必须填写 target_policy_id 或 target_text")
+        elif not (
+            str(label_data.get("subject_entity_id") or "").strip()
+            and str(label_data.get("object_entity_id") or "").strip()
+        ):
+            raise ValueError("流程关系必须填写主体实体 ID 和客体实体 ID")
 
 
 def build_manual_annotation(
@@ -193,7 +211,10 @@ def review_policy_candidate(
     insert_manual_annotation(annotation)
     status = (
         PolicyReviewStatus.APPROVED
-        if annotation_decision == PolicyAnnotationDecision.APPROVED
+        if annotation_decision in {
+            PolicyAnnotationDecision.APPROVED,
+            PolicyAnnotationDecision.CORRECTED,
+        }
         else PolicyReviewStatus.REJECTED
     )
     update_policy_candidate_review_status(kind, candidate_id, status)

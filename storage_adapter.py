@@ -5,7 +5,10 @@
 """
 import json
 import hashlib
+import re
 import uuid
+from contextlib import contextmanager
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Sequence
 from dataclasses import dataclass, field
@@ -41,6 +44,22 @@ class RelationalStorage(ABC):
         params: Optional[Sequence[Any]] = None,
     ) -> list[dict[str, Any]]:
         """查询表中数据"""
+        ...
+
+    @abstractmethod
+    def query_for_update(
+        self,
+        table_name: str,
+        where: str = "",
+        limit: int = 100,
+        params: Optional[Sequence[Any]] = None,
+    ) -> list[dict[str, Any]]:
+        """在当前事务内查询并锁定命中的行。"""
+        ...
+
+    @abstractmethod
+    def transaction(self):
+        """提供关系存储的事务上下文。"""
         ...
 
     @abstractmethod
@@ -83,6 +102,18 @@ class VectorStorage(ABC):
         self, index_name: str, query_vector: list[float], top_k: int = 10
     ) -> list[dict[str, Any]]:
         """向量相似度检索，返回 top_k 条结果（含 metadata 和 score）"""
+        ...
+
+    @abstractmethod
+    def delete_vectors_by_metadata(
+        self, index_name: str, metadata_key: str, metadata_value: str
+    ) -> int:
+        """按 metadata 的单个字段删除向量，返回删除数量。"""
+        ...
+
+    @abstractmethod
+    def count_vectors(self, index_name: str) -> int:
+        """返回一个向量索引中的记录数量。"""
         ...
 
 
@@ -196,6 +227,38 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
             cur.execute(sql, tuple(params or ()))
             return [dict(row) for row in cur.fetchall()]
 
+    def query_for_update(
+        self,
+        table_name: str,
+        where: str = "",
+        limit: int = 100,
+        params: Optional[Sequence[Any]] = None,
+    ) -> list[dict[str, Any]]:
+        """在当前事务内锁定查询结果，供并发审核等读改写场景使用。"""
+        sql = f'SELECT * FROM "{table_name}"'
+        if where:
+            sql += f" WHERE {where}"
+        sql += f" LIMIT {limit} FOR UPDATE"
+        import psycopg2.extras
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, tuple(params or ()))
+            return [dict(row) for row in cur.fetchall()]
+
+    @contextmanager
+    def transaction(self):
+        """临时关闭自动提交，在异常时回滚并恢复原连接配置。"""
+        connection = self.conn
+        original_autocommit = connection.autocommit
+        connection.autocommit = False
+        try:
+            yield
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.autocommit = original_autocommit
+
     def update_rows(
         self,
         table_name: str,
@@ -220,8 +283,18 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
 
     # --- 向量（pgvector）---
 
+    @staticmethod
+    def _validate_vector_index_name(index_name: str) -> str:
+        """限制向量表名为内部标识符，避免动态表名被注入。"""
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", index_name or ""):
+            raise ValueError(f"非法向量索引名: {index_name}")
+        return index_name
+
     def create_index(self, index_name: str, dim: int) -> None:
         """创建向量表：id, embedding(vector(dim)), metadata(jsonb)"""
+        index_name = self._validate_vector_index_name(index_name)
+        if dim < 1:
+            raise ValueError("向量维度必须大于 0")
         sql = f"""
         CREATE TABLE IF NOT EXISTS "{index_name}" (
             id SERIAL PRIMARY KEY,
@@ -251,6 +324,9 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
     ) -> int:
         if not vectors:
             return 0
+        index_name = self._validate_vector_index_name(index_name)
+        if len(vectors) != len(metadata):
+            raise ValueError("向量数量必须与 metadata 数量一致")
         sql = f'INSERT INTO "{index_name}" (embedding, metadata) VALUES (%s::vector, %s)'
         with self.conn.cursor() as cur:
             import psycopg2.extras
@@ -265,18 +341,40 @@ class PgStorageAdapter(RelationalStorage, VectorStorage, DocumentStorage):
     def search(
         self, index_name: str, query_vector: list[float], top_k: int = 10
     ) -> list[dict[str, Any]]:
+        index_name = self._validate_vector_index_name(index_name)
+        if top_k < 1:
+            raise ValueError("top_k 必须大于等于 1")
         sql = f"""
         SELECT id, metadata, 1 - (embedding <=> %s::vector) AS similarity
         FROM "{index_name}"
         ORDER BY embedding <=> %s::vector
         LIMIT %s
         """
-        with self.conn.cursor() as cur:
-            import psycopg2.extras
-            cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        import psycopg2.extras
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             vec_str = json.dumps(query_vector)
             cur.execute(sql, (vec_str, vec_str, top_k))
             return [dict(row) for row in cur.fetchall()]
+
+    def delete_vectors_by_metadata(
+        self, index_name: str, metadata_key: str, metadata_value: str
+    ) -> int:
+        """仅删除指定制度的旧向量，避免重建时影响其他制度。"""
+        index_name = self._validate_vector_index_name(index_name)
+        if not metadata_key:
+            raise ValueError("metadata 字段名不能为空")
+        sql = f'DELETE FROM "{index_name}" WHERE metadata ->> %s = %s'
+        with self.conn.cursor() as cur:
+            cur.execute(sql, (metadata_key, metadata_value))
+            return cur.rowcount
+
+    def count_vectors(self, index_name: str) -> int:
+        """查询索引记录数，用于区分空索引和正常检索。"""
+        index_name = self._validate_vector_index_name(index_name)
+        with self.conn.cursor() as cur:
+            cur.execute(f'SELECT COUNT(*) FROM "{index_name}"')
+            row = cur.fetchone()
+        return int(row[0] if row else 0)
 
     # --- JSON 文档 ---
 

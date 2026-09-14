@@ -34,7 +34,7 @@ def _has_form_strong_signal(html: str) -> bool:
     """
     检测 HTML 表格是否具有表单的强信号：
     - 存在合并单元格（colspan/rowspan）
-    - 空单元格比例 >= 30%
+    - 空单元格比例 >= 50%
     返回 True 表示极可能是表单，False 表示无强信号
     """
     try:
@@ -43,21 +43,22 @@ def _has_form_strong_signal(html: str) -> bool:
         if not table:
             return False
 
-        # 1. 检查合并单元格
+        # 1. 检查合并单元格--废弃，普通数据表可能也有合并单元格
+        '''
         has_span = any(
             cell.has_attr("colspan") or cell.has_attr("rowspan")
             for cell in table.find_all(["td", "th"])
         )
         if has_span:
             return True
-
+        '''
         # 2. 检查空单元格比例
         cells = table.find_all(["td", "th"])
         if not cells:
             return False
         empty_count = sum(1 for c in cells if not c.get_text(strip=True))
         empty_ratio = empty_count / len(cells)
-        return empty_ratio >= 0.3
+        return empty_ratio >= 0.5
     except Exception:
         return False
 

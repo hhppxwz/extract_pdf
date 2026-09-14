@@ -4,6 +4,7 @@
 文件级记录保留现有接口；批任务使用独立表保存可恢复执行所需的状态。
 """
 import hashlib
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -22,6 +23,31 @@ TABLE_BLOCK_STORAGE = "pdf_block_storage"
 TABLE_BATCHES = "pdf_batches"
 TABLE_BATCH_ITEMS = "pdf_batch_items"
 _META_READY = False
+
+
+def _is_low_confidence_source_name(source_name: str) -> bool:
+    """识别临时、哈希或下载器生成的非语义化文件名。"""
+    if not source_name:
+        return True
+    normalized = source_name.casefold()
+    return bool(
+        re.fullmatch(r"tmp[a-z0-9_-]{6,}\.pdf", normalized)
+        or re.fullmatch(r"(?:[0-9a-f]{16,}|pdf_[0-9a-f]{16,})\.pdf", normalized)
+        or re.fullmatch(r"(?:download|document|untitled|file|unknown)(?:[ _-]?\d+|\s*\(\d+\))?\.pdf", normalized)
+    )
+
+
+def choose_display_file_name(source_name: str, pdf_title: str = "") -> str:
+    """在原始文件名与 PDF 标题之间选择更可信的展示名称。"""
+    source = str(source_name or "").strip()
+    title = " ".join(str(pdf_title or "").split())
+    if not title or not _is_low_confidence_source_name(source):
+        return source
+
+    cleaned_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title).strip(". ")
+    if not 3 <= len(cleaned_title) <= 180:
+        return source
+    return cleaned_title if cleaned_title.lower().endswith(".pdf") else f"{cleaned_title}.pdf"
 
 
 def _ensure_meta_tables() -> None:
@@ -204,6 +230,20 @@ def record_file_start(
     """记录文件开始处理，按 SHA256 复用已有 file_id。"""
     record = ensure_file_record(file_name, file_data, page_count)
     return record["file_id"]
+
+
+def update_file_name(file_id: str, file_name: str) -> int:
+    """将处理后判定的真实文件名写回文件主记录。"""
+    _ensure_meta_tables()
+    return storage.relational.update_rows(
+        TABLE_FILES,
+        {
+            "file_name": file_name,
+            "updated_at": datetime.now(),
+        },
+        '"file_id" = %s',
+        (file_id,),
+    )
 
 
 def record_file_attempt(

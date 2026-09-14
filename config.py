@@ -25,9 +25,24 @@ def get_required_env(key: str) -> str:
 
 @dataclass
 class ParserConfig:
-    parser_backend: str = "cloudmineru"  # "cloudmineru" | "pymupdf"
+    parser_backend: str = "cloudmineru"  # "mineru" | "cloudmineru" | "pymupdf"
     pymupdf_extract_images: bool = True
     pymupdf_extract_tables: bool = True
+
+
+@dataclass
+class MinerUConfig:
+    """本地 MinerU 的 OpenAI 兼容服务配置。"""
+    api_url: str = field(default_factory=lambda: os.getenv(
+        "MINERU_API_URL", "http://llm.whu.edu.cn/v1/chat/completions"
+    ))
+    api_key: str = field(default_factory=lambda: os.getenv("MINERU_API_KEY", ""))
+    model: str = field(default_factory=lambda: os.getenv("MINERU_MODEL", "mineru2.5-1.2b"))
+    dpi: int = field(default_factory=lambda: int(os.getenv("MINERU_DPI", "144")))
+    max_pages: int = field(default_factory=lambda: int(os.getenv("MINERU_MAX_PAGES", "20")))
+    timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("MINERU_TIMEOUT_SECONDS", "300"))
+    )
 
 
 @dataclass
@@ -62,6 +77,10 @@ class LLMConfig:
     model: str = field(default_factory=lambda: os.getenv(
         "LLM_MODEL", "gpt-4o"
     ))
+    # 仅给模型保留有限的父条款上下文，避免本地模型因提示词过长变慢。
+    parent_context_chars: int = field(default_factory=lambda: int(os.getenv(
+        "LLM_PARENT_CONTEXT_CHARS", "600"
+    )))
     confidence_threshold: float = 0.7
 
 
@@ -112,6 +131,7 @@ class AppConfig:
     """应用总配置"""
     parser: ParserConfig = field(default_factory=ParserConfig)
 
+    mineru: MinerUConfig = field(default_factory=MinerUConfig)
     cloudmineru: CloudMinerUConfig = field(default_factory=CloudMinerUConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)

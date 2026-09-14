@@ -1,0 +1,808 @@
+{
+  "batch_id": "batch_6796832f41fa40da",
+  "documents": [
+    {
+      "policy_id": "policy_9f1adbb1eb8cf16573065bd3",
+      "file_id": "pdf_95c45803719b60d9",
+      "file_name": "关于印发《武汉大学大学生医疗保障管理办法》的通知.pdf",
+      "title": "武大字〔2026〕28 号",
+      "document_no": "",
+      "structure_version": "policy-structure-v1",
+      "clauses": [
+        {
+          "clause_id": "clause_df60ae834be689cd5ab3572f40126de4",
+          "parent_clause_id": "",
+          "level": "preamble",
+          "chapter_path": [],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "前言 武大字〔2026〕28 号\n关于印发《武汉大学大学生医疗保障管理办法》的通知\n全校各单位：\n《武汉大学大学生医疗保障管理办法》已经学校2026 年第十四次校长办公会审议通过，现予以印发，请遵照执行。\n武 汉 大 学\n2026 年 8 月 6 日\n武汉大学文件\n武汉大学大学生医疗保障管理办法",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 1
+        },
+        {
+          "clause_id": "clause_3b5a986d38f45322ec6aac42cefba39a",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第一章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第一章 总 则",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 2
+        },
+        {
+          "clause_id": "clause_3f4e708e5f4a253faf29c95d63217be6",
+          "parent_clause_id": "clause_3b5a986d38f45322ec6aac42cefba39a",
+          "level": "article",
+          "chapter_path": [
+            "第一章"
+          ],
+          "article_no": "一",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第一条 为保障我校大学生的身体健康和基本医疗需求，完善学生医疗保障体系，根据《关于将大学生纳入城镇居民基本医疗保险试点范围的指导意见》（国办发〔2008〕119 号）、《关于将大学生纳入城镇居民基本医疗保险范围的意见》（鄂政办发〔2009〕21 号）、《关于印发武汉市城乡居民医疗基本保险实施办法的通知》（武政规〔2017〕24 号）、《关于调整大学生参加居民医疗人员待遇享受期的通知》（武医保〔2021〕112 号）及《湖北省城乡居民基本医疗保险参保管理经办规程》（鄂医保办〔2025〕36 号）等文件精神，结合我校实际，制定本办法。",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 3
+        },
+        {
+          "clause_id": "clause_cc6d413e64f667175beaf948cef1fe7e",
+          "parent_clause_id": "clause_3b5a986d38f45322ec6aac42cefba39a",
+          "level": "article",
+          "chapter_path": [
+            "第一章"
+          ],
+          "article_no": "二",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二条 按照国家、学校和个人三方分担费用的机制，鼓励大学生参加武汉市城乡居民基本医疗保险（以下简称“大学生医保”），为自身健康提供坚实医疗保障。",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 4
+        },
+        {
+          "clause_id": "clause_21cad9d61a335abc1c70283cc906e1d8",
+          "parent_clause_id": "clause_3b5a986d38f45322ec6aac42cefba39a",
+          "level": "article",
+          "chapter_path": [
+            "第一章"
+          ],
+          "article_no": "三",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第三条 武汉大学医疗卫生与健康促进工作领导小组统筹负责大学生医保相关政策制定及有关工作的计划安排、组织协调和监督管理等。领导小组办公室负责大学生医保的政策宣传、组织协调、参保经办及费用报销等日常管理工作。",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 5
+        },
+        {
+          "clause_id": "clause_930e76d3b4e46f3dd1c1533bf39172b2",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二章 参保及医疗待遇\n2",
+          "page_start": 1,
+          "page_end": 1,
+          "sequence_no": 6
+        },
+        {
+          "clause_id": "clause_8dee3a14dfd1dd29ebb42a15cc7562c8",
+          "parent_clause_id": "clause_930e76d3b4e46f3dd1c1533bf39172b2",
+          "level": "article",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "四",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第四条 全校所有在籍在册全日制大学生（含本科生、研究生，下同）均可纳入大学生医保范围。参加大学生医保后，大学生享受普通门诊医疗待遇（相关费用由学校承担），门诊慢特病医疗、住院医疗待遇（相关费用由武汉市医保统筹基金承担）。\n以下学生不纳入大学生医保：",
+          "page_start": 2,
+          "page_end": 2,
+          "sequence_no": 7
+        },
+        {
+          "clause_id": "clause_74e5ed2a579ec02f5ef261a827100280",
+          "parent_clause_id": "clause_8dee3a14dfd1dd29ebb42a15cc7562c8",
+          "level": "item",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "四",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 已被原籍认定为特殊身份的学生，如最低生活保障对象、防止返贫动态监测人口、残疾人家庭等享受原籍医疗待遇的。",
+          "page_start": 2,
+          "page_end": 2,
+          "sequence_no": 8
+        },
+        {
+          "clause_id": "clause_3b15eda94b5d3ed469ead3dce3d926a7",
+          "parent_clause_id": "clause_8dee3a14dfd1dd29ebb42a15cc7562c8",
+          "level": "item",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "四",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 自行已参加其他医保的学生，如居民医保、职工医保、灵活就业医保等。",
+          "page_start": 2,
+          "page_end": 2,
+          "sequence_no": 9
+        },
+        {
+          "clause_id": "clause_1675adb7b21872a94b68262d20e0c5ab",
+          "parent_clause_id": "clause_8dee3a14dfd1dd29ebb42a15cc7562c8",
+          "level": "item",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "四",
+          "paragraph_no": "",
+          "item_no": "（三）",
+          "raw_text": "（三） 定向学生（少数民族骨干计划除外）、委培学生、强军生及留学生。",
+          "page_start": 2,
+          "page_end": 2,
+          "sequence_no": 10
+        },
+        {
+          "clause_id": "clause_2d1b23164b21a96be8ec1175d6894167",
+          "parent_clause_id": "clause_930e76d3b4e46f3dd1c1533bf39172b2",
+          "level": "article",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "五",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第五条 按照有关规定，学校作为整体参保单位组织大学生参保。每年 9 月1 日至 10 月 31 日由学校统一为符合条件的大学生办理年度参保申报及缴费手续。学生通过“智慧珞珈”APP 缴纳大学生医保费，由大学生医保办（与武汉大学医疗卫生与健康促进工作领导小组办公室合署办公）将缴费人员名单导入国家税务总局湖北省电子税务局系统，完成参保缴费相关手续。医保缴费标准按照当年武汉市医保局、税务局发布的正式文件执行。",
+          "page_start": 2,
+          "page_end": 2,
+          "sequence_no": 11
+        },
+        {
+          "clause_id": "clause_fe5485c58a672568c7f5cfe927e9837c",
+          "parent_clause_id": "clause_930e76d3b4e46f3dd1c1533bf39172b2",
+          "level": "article",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "六",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第六条 学生参加医保后，门诊待遇期为参保当年 9 月 1日（新生从入学体检统一结束之日起）至次年8 月 31 日（毕业生至次年 6 月 30 日）。门诊慢特病、住院待遇期为次年 1 月 1日至 12 月 31 日。\n3\n外校转入、延长学习期限的学生，应及时办理参保或续保手续。按学籍管理规定办理休学手续的学生，若休学期间正常缴费且由学校统一办理参保，可继续享受相应医保待遇。\n因毕业、转学、退学、出国（境）等原因办理离校手续的学生，停止享受校内各项医疗待遇，已缴纳的当年度参保费用不予退还；门诊慢特病、住院待遇按医保政策继续执行，不因离校而受影响。",
+          "page_start": 2,
+          "page_end": 3,
+          "sequence_no": 12
+        },
+        {
+          "clause_id": "clause_5ec21aff5f66588310e83b2b74f1d1a1",
+          "parent_clause_id": "clause_930e76d3b4e46f3dd1c1533bf39172b2",
+          "level": "article",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "七",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第七条 大学生医保执行城乡居民医保等待期政策。",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 13
+        },
+        {
+          "clause_id": "clause_e1f9c593e4d4b23b8e6667c2e4ca6a28",
+          "parent_clause_id": "clause_5ec21aff5f66588310e83b2b74f1d1a1",
+          "level": "item",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "七",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 固定等待期：对未在医保集中参保期内参保或未连续参保的人员，设置参保后固定等待期3 个月。",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 14
+        },
+        {
+          "clause_id": "clause_6abefd07972be75d020b71061fefa7c6",
+          "parent_clause_id": "clause_5ec21aff5f66588310e83b2b74f1d1a1",
+          "level": "item",
+          "chapter_path": [
+            "第二章"
+          ],
+          "article_no": "七",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 变动等待期：未连续参保的，每多断缴 1 年，在 3个月的固定等待期基础上再增加 1 个月的变动等待期。",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 15
+        },
+        {
+          "clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第三章 门诊就诊、转诊及报销",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 16
+        },
+        {
+          "clause_id": "clause_3aafeb57f9b4b049d9ffbca1d68dba17",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "八",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第八条 大学生医保的药品目录、诊疗项目目录、医疗服务设施目录的支付范围和标准，参照《湖北省医保目录》（限甲类、乙类）执行。",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 17
+        },
+        {
+          "clause_id": "clause_f90b1afa9f1d752f1778d2cce0377cf5",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "九",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第九条 校医院为我校参保大学生普通门诊就医的首诊医院，学生凭本人校园卡或珞珈 E 卡在校医院就诊，否则按自费处理。",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 18
+        },
+        {
+          "clause_id": "clause_2356cef382babbcc3d1ac02096fad56c",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十条 享受大学生医保普通门诊待遇的学生，在校医院就诊后，因病情特殊或医疗条件限制需转往校外武汉市公立医院的，由接诊医师开具转诊单，方可外转就诊。同一疾病的转诊自开具之日起一个月内有效，逾期需重新开具。学生须按转诊要求到指定医院检查或治疗，不得擅自更换转诊医院、扩大转诊项目范围。自行在校外医院就诊发生的医疗费用由个人自理。\n4",
+          "page_start": 3,
+          "page_end": 3,
+          "sequence_no": 19
+        },
+        {
+          "clause_id": "clause_8a27143098cc274749031c7fe3c17e45",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十一",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十一条 因急危重症在校外武汉市公立医院门诊就医的，学生本人或家属可凭就诊医院急诊相关资料（外院急诊病历、检查资料及医疗票据）及时到校医院相关科室进行急诊审核，审核通过后开具转诊单，再到大学生医保办按规定办理报销手续。",
+          "page_start": 4,
+          "page_end": 4,
+          "sequence_no": 20
+        },
+        {
+          "clause_id": "clause_d29fdfde0bf453b4b519c52867bb673d",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十二",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十二条 大学生医保普通门诊转诊医院分类如下：",
+          "page_start": 4,
+          "page_end": 4,
+          "sequence_no": 21
+        },
+        {
+          "clause_id": "clause_ddf8faaae4581434fb7e96c620a7866e",
+          "parent_clause_id": "clause_d29fdfde0bf453b4b519c52867bb673d",
+          "level": "item",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十二",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 综合定点医院：武汉大学人民医院、武汉大学中南医院、武汉大学口腔医院、中国人民解放军中部战区总医院。",
+          "page_start": 4,
+          "page_end": 4,
+          "sequence_no": 22
+        },
+        {
+          "clause_id": "clause_4bb4159e095822d20093b91508c7beaa",
+          "parent_clause_id": "clause_d29fdfde0bf453b4b519c52867bb673d",
+          "level": "item",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十二",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 专科定点医院：特殊病种经校医院专科医生诊断可转本市专长、专科医院，包括武汉市精神卫生中心（限精神疾病）、武汉市武东医院（限精神疾病）、武汉市金银潭医院（限结核疾病）、武汉科技大学附属天佑医院（限结核疾病）、武汉市第八医院（限肛肠疾病）、武汉市第一医院（限皮肤疾病）、武汉市第三医院（限烧伤疾病）、湖北省肿瘤医院（限肿瘤疾病）。",
+          "page_start": 4,
+          "page_end": 4,
+          "sequence_no": 23
+        },
+        {
+          "clause_id": "clause_56d328222574c6768c526e41445b7f7d",
+          "parent_clause_id": "clause_d29fdfde0bf453b4b519c52867bb673d",
+          "level": "item",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十二",
+          "paragraph_no": "",
+          "item_no": "（三）",
+          "raw_text": "（三） 非定点医院：除上述定点医院外的武汉市其他公立医院。",
+          "page_start": 4,
+          "page_end": 4,
+          "sequence_no": 24
+        },
+        {
+          "clause_id": "clause_5c7bb271a579fcbc04b4bdd032e178fe",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十三",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十三条 符合规定的普通门诊医疗费的报销比例。校医院医疗费报销 90%，转诊综合定点医院和专科定点医院医疗费报销\n5\n70%，转诊非定点医院医疗费报销 60%。外地实习、交流学习期间发生的门诊医疗费报销 70%。在一个学年内普通门诊医疗费累计报销不超过4000 元。",
+          "page_start": 4,
+          "page_end": 5,
+          "sequence_no": 25
+        },
+        {
+          "clause_id": "clause_8b3a7caf68108c5726eebea3aebc4d5b",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十四",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十四条 寒暑假期间，在原籍所在地因急诊在当地公立医院就诊的，门诊医疗费报销60%，就医当月累计报销总额不超过100 元。休学期间返回原籍在当地公立医院就诊发生的医疗费用，门诊医疗费报销 60％，就医累计报销总额不超过 100 元×休学月数。",
+          "page_start": 5,
+          "page_end": 5,
+          "sequence_no": 26
+        },
+        {
+          "clause_id": "clause_a9f6b0d48f3a96403f03de10daad9e04",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十五",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十五条 大学生医保门诊慢特病待遇认定及就医管理。学生可通过“湖北医疗保障”小程序（微信/支付宝）在线办理门诊慢特病待遇认定。由武汉市医保局指定的医疗机构负责对大学生进行病情鉴定，经认定符合条件的，须到指定的定点医院就诊。自认定通过之日起不再享受学校普通门诊待遇。（门诊慢特病报销比例及限额详见附件）",
+          "page_start": 5,
+          "page_end": 5,
+          "sequence_no": 27
+        },
+        {
+          "clause_id": "clause_f9356c01c32f4550a14284ad18df3b5f",
+          "parent_clause_id": "clause_0b27d687a3aa855eaeda422a28c0e121",
+          "level": "article",
+          "chapter_path": [
+            "第三章"
+          ],
+          "article_no": "十六",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十六条 符合规定的校外普通门诊医疗费票据满 30 天后，可提交报销申请（因医保数据信息滞后，当年 9 月 1 日至12 月 31 日产生的医疗费，需于次年 1 月以后提交报销申请）。线上报销通过智慧珞珈APP“医药费报销”小程序提交，线下报销至武汉大学医院四楼大学生医保办提交。\n报销须提供以下材料：转诊单、就诊医院开具的收费票据（发票）、发票对应的门诊缴费清单、电子发票验证结果打印件、报销申请单、门诊病历、处方副联、各种检查报告单等。\n6",
+          "page_start": 5,
+          "page_end": 5,
+          "sequence_no": 28
+        },
+        {
+          "clause_id": "clause_c51791d361b70197abc5b43b4f7d8c44",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第四章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第四章 住院就医及报销",
+          "page_start": 6,
+          "page_end": 6,
+          "sequence_no": 29
+        },
+        {
+          "clause_id": "clause_20b6e099a72b1cd345174ce413ef2b70",
+          "parent_clause_id": "clause_c51791d361b70197abc5b43b4f7d8c44",
+          "level": "article",
+          "chapter_path": [
+            "第四章"
+          ],
+          "article_no": "十七",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十七条 大学生医保住院就医。学生使用本人微信/支付宝申请电子医保凭证，可在武汉市医保定点医院就医，异地使用电子医保凭证前须在“湖北医疗保障”小程序（微信/支付宝）在线办理异地就医备案。",
+          "page_start": 6,
+          "page_end": 6,
+          "sequence_no": 30
+        },
+        {
+          "clause_id": "clause_64828b64b728d373ded3f1c944b42476",
+          "parent_clause_id": "clause_c51791d361b70197abc5b43b4f7d8c44",
+          "level": "article",
+          "chapter_path": [
+            "第四章"
+          ],
+          "article_no": "十八",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第十八条 大学生住院医保基金累计支付最高限额及个人支付标准和起付标准。\n在一个保险年度内，大学生住院基本医疗保险最高报销 15万元。符合规定的住院医疗费用，起付标准以下的由个人支付，起付标准以上的由医保统筹基金和个人按比例分担。一个保险年度内两次及以上住院的，起付标准减半；不同级别医院间转诊住院的，视同一次住院，转往高级别医院的须补足起付标准差额；跨年度住院的，只计算一次起付标准，每年 12 月 31 日结清当年度费用，最高支付限额按住院所属年度分别计算。具体如下：\n[表格]\n级别\\标准 | 年度内住院起付标准 | 医保报销比例\n首次 | 第二次及以后\n三级 | 800元 | 400元 | 60%\n二级 | 400元 | 200元 | 70%\n一级/社区 | 200元 | 100元 | 90%\n支付限额 | 15万元\n7",
+          "page_start": 6,
+          "page_end": 6,
+          "sequence_no": 31
+        },
+        {
+          "clause_id": "clause_694d2085adc7696a11b84ce3ca5ce797",
+          "parent_clause_id": "clause_64828b64b728d373ded3f1c944b42476",
+          "level": "item",
+          "chapter_path": [
+            "第四章"
+          ],
+          "article_no": "十八",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 在武汉市内医保定点医院住院（包括校医院），个人应当承担的医疗费用，由学生与定点医院据实结算。",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 32
+        },
+        {
+          "clause_id": "clause_1a3096ea37c6554fa5b883c3cea20e97",
+          "parent_clause_id": "clause_64828b64b728d373ded3f1c944b42476",
+          "level": "item",
+          "chapter_path": [
+            "第四章"
+          ],
+          "article_no": "十八",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 学生休学、异地实习、交流到外地学习、寒暑假期间在异地住院。若就医医院已实现异地联网结算，在住院前，需先办理异地就医备案，备案成功后，凭电子医保凭证在定点医疗机构就医，直接进行医保结算，无需回校报销。若就医医院未实现医保联网结算，发生的住院医疗费用由本人先行垫付，出院后，回校至大学生医保办按规定办理申报相关手续。",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 33
+        },
+        {
+          "clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第五章 门诊不予报销的项目",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 34
+        },
+        {
+          "clause_id": "clause_510a9e65329a498a9a02309767b91131",
+          "parent_clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "level": "article",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十条 服务项目类包括：",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 35
+        },
+        {
+          "clause_id": "clause_bdedf94669591d20aa72eb80a4a5a38d",
+          "parent_clause_id": "clause_510a9e65329a498a9a02309767b91131",
+          "level": "item",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 医疗服务类。包括挂号费、门诊诊疗费、医事服务费、会诊费、检查治疗加急费、优质优价费、中药煎药费（包括药引子费）、出诊费、就（转）诊交通费、120 急救相关费用、建立健康档案、病历工本费、图像记录附加收费、其他或无项目的费用等。",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 36
+        },
+        {
+          "clause_id": "clause_04c0c71792a2576a9c89886d15a66661",
+          "parent_clause_id": "clause_510a9e65329a498a9a02309767b91131",
+          "level": "item",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 特需医疗服务类。包括陪护费、特别护理费、点时手术、点名会诊、点名检查、点名护理、家庭医疗保健服务等。",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 37
+        },
+        {
+          "clause_id": "clause_b00c9bdc5dadf58efc735aaaf1a5d2ee",
+          "parent_clause_id": "clause_510a9e65329a498a9a02309767b91131",
+          "level": "item",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十",
+          "paragraph_no": "",
+          "item_no": "（三）",
+          "raw_text": "（三） 生活服务类。包括伙食费、营养餐、药膳等。",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 38
+        },
+        {
+          "clause_id": "clause_66ec30c1c5b72b1a31b7a5291cf61f20",
+          "parent_clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "level": "article",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十一",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十一条 非疾病治疗项目类包括：\n各种非功能性整容或整形美容科发生的费用、矫形手术、洁牙、镶牙、种植牙、牙套、牙列正畸、阻生牙、色斑牙治疗、光固化、牙冠等；呼吸睡眠暂停综合征、性早熟、包皮环切、除腋臭的诊疗；痤疮、非功能性瘢痕；各种减肥、增胖、增高项目的一切费用；各类体检费用；各种预防、保健性的诊疗项目（预防接种、跟踪随访费等）；各种医疗咨询、健康教育、医疗鉴定等项目。\n8",
+          "page_start": 7,
+          "page_end": 7,
+          "sequence_no": 39
+        },
+        {
+          "clause_id": "clause_62d08b61978ad34012f74680cf205cc3",
+          "parent_clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "level": "article",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十二",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十二条 疾病治疗项目类包括：\n各类器官或组织移植的器官源或组织源；近视眼矫正术；气功疗法、音乐疗法、保健性的营养疗法、磁疗、热疗、水疗、中药浴、药熏；各种保健性质的推拿按摩项目、心理治疗（精神病患者除外）、心理咨询、心理辅导等辅助性治疗项目。",
+          "page_start": 8,
+          "page_end": 8,
+          "sequence_no": 40
+        },
+        {
+          "clause_id": "clause_1365ab7c7fc4eae0c0777eef27a154b2",
+          "parent_clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "level": "article",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十三",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十三条 诊疗项目及医用材料类包括：\n应用正电子发射断层扫描装置（PET）、电子束 CT、眼科准分子激光治疗仪、胶囊镜、人体信息诊断仪器等检查治疗费用；眼镜、义齿、义眼、义肢、助听器等康复性器具；各种自用的保健、按摩、检查和治疗器械；消毒药品；物价部门规定单独收费的一次性医用材料；彩色一次性成像照片、治疗中使用的一次性卫生器材、材料费（此费用未单列者按检查、治疗和处置总费用的20%扣除）等。",
+          "page_start": 8,
+          "page_end": 8,
+          "sequence_no": 41
+        },
+        {
+          "clause_id": "clause_6eb4dcbd37a45ca6a7b1d7d10446d13a",
+          "parent_clause_id": "clause_3fabbce481d4fc9d1bebc10d90763b9d",
+          "level": "article",
+          "chapter_path": [
+            "第五章"
+          ],
+          "article_no": "二十四",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十四条 其他项目包括：\n各种不育（孕）症、性功能障碍的诊疗项目；各类科研性、临床难治性的诊疗项目；出国（境）期间所发生的医疗费用；由于打架、斗殴、酗酒、交通肇事、医疗事故以及违反学校规定致伤致残所发生的医疗费用；由于本人或他人的行为过失造成伤病所发生的医疗费用；未经物价部门核价医疗机构自行定价的医疗服务、诊疗项目费用或医院自行提高收费标准的差价部分；药店（或网店）购买药品费用；个体、民营及私立医院就医费用；医保目录非甲类、乙类的项目；无痛胃肠镜检查麻醉部分；中医辨证论治、各类评定费用（不含精神类疾病患者心理测评）；学生患自身免疫性疾病、遗传性疾病、先天性疾患、入学前已存在的疾病及生育类相关费用；未经转诊产生的医疗费用；节假日（寒暑假除外）、双休日返家患病就医的门诊医疗费。\n9",
+          "page_start": 8,
+          "page_end": 8,
+          "sequence_no": 42
+        },
+        {
+          "clause_id": "clause_843177238092f7c292f703ab5c4495d3",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第六章 其他相关事项",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 43
+        },
+        {
+          "clause_id": "clause_c115671363b404d179407eaecbc15128",
+          "parent_clause_id": "clause_843177238092f7c292f703ab5c4495d3",
+          "level": "article",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十五",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十五条 大学生医保仅限本人使用，不得变更享受对象。以下情况一经查实，除对直接责任人追回已违规报销的医疗费用外，还将向其所在培养单位通报相关情况，情节严重者，依法移交上级医保部门处理。",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 44
+        },
+        {
+          "clause_id": "clause_3d5654a4312f2ff8278db302d8415004",
+          "parent_clause_id": "clause_c115671363b404d179407eaecbc15128",
+          "level": "item",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十五",
+          "paragraph_no": "",
+          "item_no": "（一）",
+          "raw_text": "（一） 将本人校园卡转借他人就诊。",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 45
+        },
+        {
+          "clause_id": "clause_c7ea0249cc9274748d7daca47736dc55",
+          "parent_clause_id": "clause_c115671363b404d179407eaecbc15128",
+          "level": "item",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十五",
+          "paragraph_no": "",
+          "item_no": "（二）",
+          "raw_text": "（二） 持他人校园卡冒名就诊。",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 46
+        },
+        {
+          "clause_id": "clause_0dfce51934cfc78f17e96b0fe63f5add",
+          "parent_clause_id": "clause_c115671363b404d179407eaecbc15128",
+          "level": "item",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十五",
+          "paragraph_no": "",
+          "item_no": "（三）",
+          "raw_text": "（三） 私自涂改处方、转诊单、费用单据，伪造报销材料冒领医疗费用。",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 47
+        },
+        {
+          "clause_id": "clause_94c272eae14c6b2cf15631bf538aee24",
+          "parent_clause_id": "clause_c115671363b404d179407eaecbc15128",
+          "level": "item",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十五",
+          "paragraph_no": "",
+          "item_no": "（四）",
+          "raw_text": "（四） 其他违规行为。\n10",
+          "page_start": 9,
+          "page_end": 9,
+          "sequence_no": 48
+        },
+        {
+          "clause_id": "clause_315d8ea8a015da9f5e62dc11bb8540a7",
+          "parent_clause_id": "clause_843177238092f7c292f703ab5c4495d3",
+          "level": "article",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十六",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十六条 参保学生报销门诊医疗费用，须按规定完整提供真实有效材料。材料缺失、伪造，或转诊单、病历与票据信息不符的，不予报销。报销票据有效期按照学校财务报销管理规定执行。",
+          "page_start": 10,
+          "page_end": 10,
+          "sequence_no": 49
+        },
+        {
+          "clause_id": "clause_5a8a81386a96a06f432e1b3c9943c9fd",
+          "parent_clause_id": "clause_843177238092f7c292f703ab5c4495d3",
+          "level": "article",
+          "chapter_path": [
+            "第六章"
+          ],
+          "article_no": "二十七",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十七条 学生不能同时享受武汉大学门诊医疗待遇和其他基本医疗保险待遇。已使用医保支付（含医保亲情共济账户）的票据视为无效票据，不予报销。",
+          "page_start": 10,
+          "page_end": 10,
+          "sequence_no": 50
+        },
+        {
+          "clause_id": "clause_447e425a46018f4592d4095dd666292c",
+          "parent_clause_id": "",
+          "level": "chapter",
+          "chapter_path": [
+            "第七章"
+          ],
+          "article_no": "",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第七章 附则",
+          "page_start": 10,
+          "page_end": 10,
+          "sequence_no": 51
+        },
+        {
+          "clause_id": "clause_4c0b53f9d6d4bc8494ac1c7f70cb10f3",
+          "parent_clause_id": "clause_447e425a46018f4592d4095dd666292c",
+          "level": "article",
+          "chapter_path": [
+            "第七章"
+          ],
+          "article_no": "二十八",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十八条 本办法自 2026 年9 月 1 日起施行。本办法施行前已发生的医疗费用，按原规定执行；施行后发生的医疗费用，按本办法执行。原《武汉大学学生医疗保障管理办法（暂行）》（武大体卫字〔2010〕5 号）同时作废。",
+          "page_start": 10,
+          "page_end": 10,
+          "sequence_no": 52
+        },
+        {
+          "clause_id": "clause_3ab611ee4f11c717ba3178539ddb57c5",
+          "parent_clause_id": "clause_447e425a46018f4592d4095dd666292c",
+          "level": "article",
+          "chapter_path": [
+            "第七章"
+          ],
+          "article_no": "二十九",
+          "paragraph_no": "",
+          "item_no": "",
+          "raw_text": "第二十九条 本办法由武汉大学医院负责解释。\n11\n门诊慢特病报销比例和限额\n大学生在门诊治疗慢特病，符合规定的医疗费用由医保基金支付 70%。同时办理两种及以上门诊慢特病的，统筹基金年度支付限额在最高的病种限额基础上每增加一个病种增加 2000 元，直至最高支付限额。（具体以医保部门公布的最新文件精神执行）\n[表格]\n病种 | 统筹基金支付比例 | 统筹基金年度支付限额\n高血压III期(有心、脑、肾并发症之一者)治疗 | 70% | 5600元\n糖尿病(合并感染或有心、肾、眼、神经并发症之一者)治疗 | 70% | 5600元\n慢性肾功能衰竭需做肾透析治疗 | 70% | 130000元\n肾移植术后抗排异 | 70% | 130000元\n恶性肿瘤化学治疗和放射治疗 | 70% | 130000元\n重症精神病 | 70% | 4000元\n慢性重症肝炎、肝硬变 | 70% | 5600元\n帕金森氏病及帕金森氏综合症 | 70% | 4000元\n系统性红斑狼疮 | 70% | 4000元\n慢性再生障碍性贫血 | 70% | 9600元\n肝移植术后抗排异 | 70% | 130000元\n慢性肾衰竭(尿毒症前期) | 70% | 5600元\n乙型肝炎的抗病毒治疗 | 70% | 20000元\n丙型肝炎的抗病毒治疗 | 70% | 20000元\n慢性阻塞性肺疾病III级及以上 | 70% | 5600元\n慢性肺源性心脏病(达到肺、心功能失代偿期的) | 70% | 5600元\n甲状腺功能亢进(发生了甲状腺毒症性心脏病的) | 70% | 5600元\n血友病 | 70% | 16000元\n类风湿关节炎(X线检查关节病变III期及以上的) | 70% | 4000元\n系统性硬化病(达到皮肤病变硬化期或萎缩期的) | 70% | 4000元\n强直性脊柱炎(出现“放射学骶髂关节炎”的) | 70% | 4000元\n血管介入治疗术后 | 70% | 5600元\n心脏瓣膜置换术后 | 70% | 5600元\n儿童孤独症 | 70% | 4000元\n脑性瘫痪 | 70% | 4000元\n精神发育迟滞(伴精神障碍的) | 70% | 4000元\n脑血管疾病后遗症(经影像学证实并且有严重神经功能缺损) | 70% | 5600元\n癫痫 | 70% | 4000元\n冠心病(心力衰竭达到难治性终末期心衰阶段) | 70% | 5600元\n冠心病外科治疗术后 | 70% | 5600元\n风湿性心脏病(心力衰竭达到难治性终末期心衰阶段) | 70% | 5600元\n重症肌无力(中度全身型及以上) | 70% | 4000元\n12\n13\n2026 年 8 月 6 日印发\n武汉大学党政办公室\n主动公开\n14",
+          "page_start": 10,
+          "page_end": 13,
+          "sequence_no": 53
+        }
+      ]
+    }
+  ]
+}
