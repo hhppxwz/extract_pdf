@@ -113,6 +113,23 @@ def run_batch_status(batch_id: str) -> None:
     _print_batch_summary(get_batch_status(batch_id))
 
 
+def run_reset_file(file_id: str) -> None:
+    """清理单个 PDF 的数据库自动产物，使其能够重新进入批处理。"""
+    from file_reset import reset_file_database_artifacts
+
+    summary = reset_file_database_artifacts(file_id)
+    print(f"已重置文件自动产物: {file_id}")
+    print(
+        "已清理："
+        f"文本向量 {summary['text_vectors']}，"
+        f"数据表 {summary['data_tables']}，"
+        f"表单 {summary['forms']}，"
+        f"表格目录 {summary['table_catalog_records']}，"
+        f"块溯源 {summary['block_records']}，"
+        f"制度条款 {summary['policy_clauses']}"
+    )
+
+
 def _print_policy_extraction_summary(status: dict) -> None:
     """打印制度实体关系抽取运行统计。"""
     run = status["run"]
@@ -421,6 +438,11 @@ if __name__ == '__main__':
         type=str,
         help="查看指定批次状态，不执行文件"
     )
+    recovery_group.add_argument(
+        "--reset-file",
+        type=str,
+        help="删除指定文件的数据库自动产物并置为待处理，供重新解析使用",
+    )
     entity_graph_group.add_argument(
         "--extract-policy-batch",
         type=str,
@@ -581,6 +603,7 @@ if __name__ == '__main__':
         bool(args.process_dir),
         bool(args.resume_batch),
         bool(args.batch_status),
+        bool(args.reset_file),
         bool(args.extract_policy_batch),
         bool(args.classify_policy_process_batch),
         bool(args.resume_policy_process),
@@ -604,6 +627,11 @@ if __name__ == '__main__':
     ]
     if sum(selected_modes) > 1:
         parser.error("处理、批次和制度抽取参数只能选择一个")
+    if args.reset_file:
+        from file_reset import is_valid_file_id
+
+        if not is_valid_file_id(args.reset_file):
+            parser.error("文件 ID 格式非法")
     if args.limit is not None and not (args.extract_policy_batch or args.extract_policy_process_run):
         parser.error("--limit 只能与制度实体关系抽取参数一起使用")
     if args.limit is not None and args.limit < 1:
@@ -655,6 +683,8 @@ if __name__ == '__main__':
 
     if args.process_dir:
         run_process_dir(args.process_dir, backend=args.backend)
+    elif args.reset_file:
+        run_reset_file(args.reset_file)
     elif args.resume_batch:
         run_resume_batch(args.resume_batch)
     elif args.batch_status:

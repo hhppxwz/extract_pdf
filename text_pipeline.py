@@ -308,7 +308,15 @@ def process_text_blocks(
         print(f"[重组] 学术论文: {len(text_blocks)} 个原始块 → {len(merged_units)} 个章节单元")
     elif doc_type == "policy_regulation":
         merged_units = _merge_by_article(text_blocks)
-        print(f"[重组] 政策制度: {len(text_blocks)} 个原始块 → {len(merged_units)} 个条款单元")
+        number = r"[0-9一二三四五六七八九十百千万零〇两]+"
+        chapter_pattern = re.compile(rf"^\s*第\s*{number}\s*章", re.M)
+        article_pattern = re.compile(rf"^\s*第\s*{number}\s*条(?!款)", re.M)
+        chapter_count = sum(len(chapter_pattern.findall(block.content)) for block in text_blocks)
+        article_count = sum(len(article_pattern.findall(block.content)) for block in text_blocks)
+        print(
+            f"[重组] 政策制度: {len(text_blocks)} 个原始块 → {len(merged_units)} 个条款单元"
+            f"（{chapter_count} 章，{article_count} 条）"
+        )
     elif doc_type == "admin_form":
         merged_units = _merge_by_page(text_blocks)
         print(f"[重组] 行政表单: {len(text_blocks)} 个原始块 → {len(merged_units)} 个页面单元")
