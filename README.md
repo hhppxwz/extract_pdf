@@ -166,7 +166,11 @@ python main.py --review-policy-run policy_run_xxxxxxxxxxxxxxxx --reviewer 张三
 
 **制度废止关系审核：**
 
-制度条款结构化完成后，可以单独从明确的废止措辞提取制度级候选；这不会调用大模型，也不会自动改变任何旧制度的状态。
+使用 `--process` 或 `--process-dir` 解析制度 PDF 时，条款结构化完成后会自动检查明确的废止措辞。只有识别到候选才会显示来源制度、目标制度、日期、页码和证据，并提示输入 `y` 插入、`n` 跳过或 `q` 结束本次命令的后续询问。插入的候选状态仍为 `pending`，不会自动改变旧制度状态。
+
+如果被废止制度晚于来源制度入库，系统会在目标制度结构化后反向匹配历史未解析候选，并询问是否批准；确认后会回填 `target_policy_id`，同时把目标制度标记为 `invalid` 并写入已识别的失效日期。文号精确唯一匹配优先，标题规范化唯一匹配作为后备；歧义关系不会自动绑定。API 和批次恢复不会等待终端输入。
+
+也可以单独为已有结构化批次补录制度级候选；该命令保持自动插入全部候选，不调用大模型：
 
 ```powershell
 # 从已结构化批次中提取废止关系候选
@@ -255,6 +259,47 @@ python main.py --report-policy-quality "D:\policy_quality"
 
 导出目录会包含 `条款抽检.csv`、`图谱抽检.csv`、`错误字典.csv`；报告命令会新增 `质量报告.md` 与 `质量报告.json`。条款表核验边界、层级、文字和页码；图谱表核验实体/关系是否有原文证据。人工填写只保存在 CSV 中，系统原始结果不会被覆盖。
 
+## 文档级版本治理与时间检索
+
+PDF 条款结构化完成后，系统会从整份文本识别明确生效日期；已有生效日期不会被自动结果覆盖。历史批次无需重新解析 PDF，可执行：
+
+```powershell
+python main.py --backfill-policy-governance batch_xxxxxxxxxxxxxxxx
+python main.py --policy-governance-status batch_xxxxxxxxxxxxxxxx
+python main.py --review-policy-families batch_xxxxxxxxxxxxxxxx --family-reviewer 张三
+```
+
+归族候选来自已批准的废止关系和规范标题匹配，但废止关系本身不等于版本继承，必须人工确认。条款不单独保存有效期，而是继承所属 `policy_documents` 的 `effective_date` 与 `expiry_date`。
+
+普通检索保持原行为；只有提供 `as_of` 时才应用左闭右开的有效区间过滤。日期未知的制度不会被丢弃，但排在可证明适用的制度之后：
+
+```http
+GET /policy-search?q=差旅住宿标准&top_k=10
+GET /policy-search?q=差旅住宿标准&top_k=10&as_of=2020-06-01
+```
+
+时间检索实时读取 PostgreSQL 中的文档治理字段，无需因日期或制度族调整而重建向量索引。同一制度族在指定日期存在多个适用版本时，接口保留全部结果并返回重叠警告。
+
+### 基于制度证据的初步问答
+
+`POST /policy-answer` 会从最多三份制度中选择最多八条相关条款，再使用独立的 `ANSWER_LLM_API_URL`、`ANSWER_LLM_API_KEY` 和 `ANSWER_LLM_MODEL` 配置生成带引用的初步回答。默认接入 DeepSeek 官方 API，不会改变制度抽取和表格分类继续使用的本地 Qwen：
+
+启动 API 服务后，可直接打开 `http://127.0.0.1:8000/policy-qa`，在页面中输入问题并使用日期选择器指定适用日期。
+
+```http
+POST /policy-answer
+Content-Type: application/json
+
+{
+  "question": "差旅住宿标准是否适用于校外专家？",
+  "as_of": "2026-09-16"
+}
+```
+
+未提供 `as_of` 时，系统只自动识别问题中的完整日期；模糊历史时间会要求补充具体日期，完全没有时间表达则按请求当天检索。模型只能引用服务端提供的证据编号，响应中的制度原文、条款编号和页码由服务端回填。
+
+该接口提供的是基于现有制度库的初步判断，不是正式审批或最终合规裁决。明确的符合、不符合和有条件符合结论都会标记 `requires_human_review=true`。没有明确适用证据、模型未配置、模型超时或输出无法校验时，接口返回 `undetermined` 和已检索原文，不会编造结论。
+
 ## 服务配置
 
 设置以下环境变量连接真实服务：
@@ -264,10 +309,16 @@ python main.py --report-policy-quality "D:\policy_quality"
 $env:CLOUDMINERU_API_URL = "https://your-host/api/v1"
 $env:CLOUDMINERU_API_KEY = "your-key"
 
-# LLM API（OpenAI 兼容）
+# 制度抽取和表格分类 LLM（当前为本地 Qwen，OpenAI 兼容）
 $env:LLM_API_URL = "https://api.openai.com/v1"
 $env:LLM_API_KEY = "sk-xxx"
 $env:LLM_MODEL = "gpt-4o"
+
+# 制度问答 LLM（DeepSeek 官方 OpenAI 兼容接口）
+$env:ANSWER_LLM_API_URL = "https://api.deepseek.com"
+$env:ANSWER_LLM_API_KEY = "your-deepseek-key"
+$env:ANSWER_LLM_MODEL = "deepseek-flash"
+$env:ANSWER_LLM_THINKING = "false"
 
 # PostgreSQL
 $env:PG_HOST = "127.0.0.1"

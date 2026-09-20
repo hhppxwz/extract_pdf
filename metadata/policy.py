@@ -11,7 +11,10 @@ def extract_policy_metadata(blocks: List[ContentBlock]) -> Dict[str, str]:
     meta = {}
 
     # 文号
-    doc_num_match = re.search(r'([\u4e00-\u9fa5]{2,4}〔\d{4}〕\d+号)', header_text)
+    doc_num_match = re.search(
+        r'([\u4e00-\u9fa5]{2,4}\s*〔\s*\d{4}\s*〕\s*\d+\s*号)',
+        header_text,
+    )
     if doc_num_match:
         meta['doc_number'] = doc_num_match.group(1)
 

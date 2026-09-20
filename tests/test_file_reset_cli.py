@@ -60,6 +60,50 @@ class _ResetVectorStorage:
         return 2
 
 
+class _PgDatabaseError(Exception):
+    """模拟带 SQLSTATE 的 PostgreSQL 异常。"""
+
+    def __init__(self, message: str, pgcode: str) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
+
+
+class _MissingPolicyVectorStorage(_ResetVectorStorage):
+    """模拟可选的制度条款向量表尚未创建。"""
+
+    def delete_vectors_by_metadata(self, index_name: str, metadata_key: str, metadata_value: str) -> int:
+        if index_name == "policy_clause_vectors":
+            raise _PgDatabaseError('错误: 关系 "policy_clause_vectors" 不存在', "42P01")
+        return super().delete_vectors_by_metadata(index_name, metadata_key, metadata_value)
+
+
+class _PermissionDeniedPolicyVectorStorage(_ResetVectorStorage):
+    """模拟缺少删除制度条款向量的数据库权限。"""
+
+    def delete_vectors_by_metadata(self, index_name: str, metadata_key: str, metadata_value: str) -> int:
+        if index_name == "policy_clause_vectors":
+            raise _PgDatabaseError('错误: 对关系 "policy_clause_vectors" 权限不够', "42501")
+        return super().delete_vectors_by_metadata(index_name, metadata_key, metadata_value)
+
+
+class _EnglishTextPermissionDeniedPolicyVectorStorage(_ResetVectorStorage):
+    """模拟错误消息含英文缺表文本的权限异常。"""
+
+    def delete_vectors_by_metadata(self, index_name: str, metadata_key: str, metadata_value: str) -> int:
+        if index_name == "policy_clause_vectors":
+            raise _PgDatabaseError('permission denied: relation does not exist', "42501")
+        return super().delete_vectors_by_metadata(index_name, metadata_key, metadata_value)
+
+
+class _EnglishTextMissingPolicyVectorStorage(_ResetVectorStorage):
+    """模拟不提供 SQLSTATE 的英文缺表异常。"""
+
+    def delete_vectors_by_metadata(self, index_name: str, metadata_key: str, metadata_value: str) -> int:
+        if index_name == "policy_clause_vectors":
+            raise Exception('relation "policy_clause_vectors" does not exist')
+        return super().delete_vectors_by_metadata(index_name, metadata_key, metadata_value)
+
+
 class _ResetStorage:
     """组合重置测试需要的两类存储接口。"""
 
@@ -151,6 +195,84 @@ class FileResetCliTests(unittest.TestCase):
             ("pdf_pdf_123_text", "file_id", "pdf_123"),
             ("policy_clause_vectors", "policy_id", "policy_1"),
         ])
+        self.assertIn(
+            ("pdf_files", {"status": "pending", "error_message": "", "last_attempt_at": None}, '"file_id" = %s', ("pdf_123",)),
+            fake_storage.relational.updated_rows,
+        )
+
+    def test_reset_file_deletes_clause_dependents_before_policy_clauses(self) -> None:
+        """防止废止关系等下游记录通过外键阻止制度条款重置。"""
+        fake_storage = _ResetStorage()
+
+        with patch("file_reset.storage", fake_storage):
+            reset_file_database_artifacts("pdf_123")
+
+        sql = fake_storage.relational.executed_sql
+        clause_delete_index = next(
+            index for index, statement in enumerate(sql)
+            if 'DELETE FROM "policy_clauses"' in statement
+        )
+        dependent_tables = {
+            "policy_document_relations",
+            "policy_process_items",
+            "policy_process_labels",
+            "policy_extraction_items",
+            "policy_entities",
+            "policy_relations",
+            "policy_manual_annotations",
+        }
+        deleted_before_clauses = {
+            table
+            for table in dependent_tables
+            if any(
+                f'DELETE FROM "{table}"' in statement
+                for statement in sql[:clause_delete_index]
+            )
+        }
+        self.assertEqual(deleted_before_clauses, dependent_tables)
+
+    def test_reset_file_ignores_missing_optional_vector_table_by_sqlstate(self) -> None:
+        """防止 PostgreSQL 返回中文缺表信息时中断文件重置。"""
+        fake_storage = _ResetStorage()
+        fake_storage.vector = _MissingPolicyVectorStorage()
+
+        with patch("file_reset.storage", fake_storage):
+            summary = reset_file_database_artifacts("pdf_123")
+
+        self.assertEqual(summary["text_vectors"], 2)
+        self.assertEqual(summary["policy_clauses"], 2)
+        self.assertIn(
+            ("pdf_files", {"status": "pending", "error_message": "", "last_attempt_at": None}, '"file_id" = %s', ("pdf_123",)),
+            fake_storage.relational.updated_rows,
+        )
+
+    def test_reset_file_reraises_non_missing_table_database_error(self) -> None:
+        """防止权限等真实数据库故障被误认为缺表而掩盖。"""
+        fake_storage = _ResetStorage()
+        fake_storage.vector = _PermissionDeniedPolicyVectorStorage()
+
+        with patch("file_reset.storage", fake_storage):
+            with self.assertRaisesRegex(_PgDatabaseError, "权限不够"):
+                reset_file_database_artifacts("pdf_123")
+
+    def test_reset_file_does_not_ignore_non_missing_sqlstate_with_english_text(self) -> None:
+        """防止带非缺表 SQLSTATE 的异常被英文兼容分支误吞。"""
+        fake_storage = _ResetStorage()
+        fake_storage.vector = _EnglishTextPermissionDeniedPolicyVectorStorage()
+
+        with patch("file_reset.storage", fake_storage):
+            with self.assertRaisesRegex(_PgDatabaseError, "permission denied"):
+                reset_file_database_artifacts("pdf_123")
+
+    def test_reset_file_ignores_english_missing_table_text_without_sqlstate(self) -> None:
+        """保留未提供 SQLSTATE 的英文缺表异常兼容行为。"""
+        fake_storage = _ResetStorage()
+        fake_storage.vector = _EnglishTextMissingPolicyVectorStorage()
+
+        with patch("file_reset.storage", fake_storage):
+            summary = reset_file_database_artifacts("pdf_123")
+
+        self.assertEqual(summary["policy_clauses"], 2)
         self.assertIn(
             ("pdf_files", {"status": "pending", "error_message": "", "last_attempt_at": None}, '"file_id" = %s', ("pdf_123",)),
             fake_storage.relational.updated_rows,

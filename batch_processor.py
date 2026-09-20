@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import fitz
 
@@ -232,7 +232,13 @@ def _mark_failed(item_id: str, error: str, kind: ErrorKind) -> None:
     )
 
 
-def _process_item(item: dict[str, Any], versions: ProcessingVersion, max_attempts: int) -> None:
+def _process_item(
+    item: dict[str, Any],
+    versions: ProcessingVersion,
+    max_attempts: int,
+    abolition_confirmation: Callable[[Any], str] | None = None,
+    abolition_approval_confirmation: Callable[[dict[str, Any]], str] | None = None,
+) -> None:
     """处理一个文件任务，临时错误自动重试并持久化每次状态。"""
     file_path = Path(item["file_path"])
     if not file_path.is_file():
@@ -307,7 +313,12 @@ def _process_item(item: dict[str, Any], versions: ProcessingVersion, max_attempt
     for _ in range(max_attempts):
         attempt_count = _mark_item_running(latest_item, record["file_id"])
         record_file_attempt(record["file_id"], versions)
-        result = process_pdf(str(file_path), page_count)
+        result = process_pdf(
+            str(file_path),
+            page_count,
+            abolition_confirmation=abolition_confirmation,
+            abolition_approval_confirmation=abolition_approval_confirmation,
+        )
         if result.status.value in {"done", "succeeded"}:
             update_batch_item(
                 item["item_id"],
@@ -414,7 +425,12 @@ def _refresh_batch(batch_id: str) -> dict[str, Any]:
     return get_batch_status(batch_id)
 
 
-def run_batch(batch_id: str, resume: bool = False) -> dict[str, Any]:
+def run_batch(
+    batch_id: str,
+    resume: bool = False,
+    abolition_confirmation: Callable[[Any], str] | None = None,
+    abolition_approval_confirmation: Callable[[dict[str, Any]], str] | None = None,
+) -> dict[str, Any]:
     """运行新批次或恢复已有批次。"""
     batch = get_batch(batch_id)
     if not batch:
@@ -440,7 +456,13 @@ def run_batch(batch_id: str, resume: bool = False) -> dict[str, Any]:
         if item.get("status") == BatchItemStatus.RUNNING.value and _is_stale(item):
             update_batch_item(item["item_id"], {"status": BatchItemStatus.PENDING.value})
         if _eligible(item, resume, max_attempts):
-            _process_item(item, versions, max_attempts)
+            _process_item(
+                item,
+                versions,
+                max_attempts,
+                abolition_confirmation,
+                abolition_approval_confirmation,
+            )
             _refresh_batch(batch_id)
 
     return _refresh_batch(batch_id)

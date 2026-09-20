@@ -285,18 +285,57 @@ def calculate_policy_parse_quality(blocks: list[ContentBlock], clauses: list[Pol
 
 
 def _guess_title(file_name: str, blocks: list[ContentBlock]) -> str:
-    """从前两页选择最像制度标题的文本，失败时使用文件名。"""
-    ordered_blocks = [item for _, item in sorted(
-        enumerate(blocks), key=lambda pair: (pair[1].page_num, pair[0])
-    )]
-    for block in ordered_blocks:
-        if block.page_num > 2 or block.type != BlockType.TEXT:
+    """优先使用可信文件名，否则按通知首页规则寻找正文标题。"""
+    from metadata_service import _is_low_confidence_source_name
+
+    source_name = Path(file_name).name
+    file_title = Path(source_name).stem.strip()
+    if file_title and not _is_low_confidence_source_name(source_name):
+        return file_title
+
+    page_lines: dict[int, list[str]] = {}
+    for _, block in sorted(enumerate(blocks), key=lambda pair: (pair[1].page_num, pair[0])):
+        if block.type != BlockType.TEXT:
             continue
-        for line in str(block.content).splitlines():
-            text = line.strip()
-            if 4 <= len(text) <= 100 and not re.match(r"^第\s*" + _NUMBER, text):
+        page_lines.setdefault(block.page_num, []).extend(
+            line.strip() for line in str(block.content).splitlines() if line.strip()
+        )
+
+    first_page = min(page_lines, default=0)
+    first_page_text = "".join(page_lines.get(first_page, []))
+    has_notice_cover = bool(re.search(r"关于.{2,100}的通知", first_page_text))
+    target_page = first_page + 1 if has_notice_cover else first_page
+
+    def title_candidates(page_num: int) -> list[str]:
+        candidates: list[str] = []
+        for text in page_lines.get(page_num, []):
+            compact = "".join(text.split())
+            if not 4 <= len(compact) <= 100:
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fa5]{2,20}(?:文件|公文)", compact):
+                continue
+            if re.search(r"〔\s*\d{4}\s*〕\s*\d+\s*号", compact):
+                continue
+            if re.match(r"^第\s*" + _NUMBER + r"\s*(?:编|章|节|条)", compact):
+                continue
+            candidates.append(text)
+        return candidates
+
+    candidates = title_candidates(target_page)
+    title_suffix = re.compile(r"(?:办法|规定|细则|通知|决定|意见|章程|条例)(?:[（(].+?[）)])?$")
+    for text in candidates:
+        if title_suffix.search("".join(text.split())):
+            return text
+    if candidates:
+        return candidates[0]
+
+    # 第二页缺少可靠标题时，保留通知标题作为最后的正文线索。
+    if has_notice_cover:
+        notice_candidates = title_candidates(first_page)
+        for text in notice_candidates:
+            if re.search(r"关于.{2,100}的通知", "".join(text.split())):
                 return text
-    return Path(file_name).stem
+    return file_title or "未命名制度"
 
 
 def structure_policy_document(
@@ -323,6 +362,25 @@ def structure_policy_document(
         if not clauses:
             raise ValueError("未识别到任何制度条款")
         replace_policy_clauses(policy_id, clauses, structure_version)
+        try:
+            # 时间治理失败不应推翻已经完成的条款结构化结果。
+            from policy.governance import apply_effective_date_governance
+
+            apply_effective_date_governance(
+                policy_id,
+                [str(block.content or "") for block in blocks if block.type == BlockType.TEXT],
+                str(metadata.get("issue_date") or "") or None,
+                str(metadata.get("effective_date") or "") or None,
+            )
+        except Exception as exc:
+            try:
+                insert_review_item(ReviewItem(
+                    review_id=f"review_{uuid.uuid4().hex}", policy_id=policy_id,
+                    issue_type="effective_date_governance_error",
+                    description=f"制度生效日期识别失败: {str(exc)[:1000]}",
+                ))
+            except Exception:
+                pass
         # replace_policy_clauses 已标记成功，这里只补写实际质量分数。
         from storage_adapter import storage
         storage.relational.update_rows(

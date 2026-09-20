@@ -165,6 +165,30 @@ class PolicyRetrievalRuleTests(unittest.TestCase):
         self.assertIn("--resume-policy-clause-index", completed.stdout)
         self.assertIn("--policy-clause-index-status", completed.stdout)
 
+    def test_policy_search_rejects_invalid_as_of(self) -> None:
+        """非法时间点应在访问检索服务前返回 422。"""
+        from fastapi import HTTPException
+        from api import policy_search
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(policy_search(q="差旅报销材料", top_k=3, as_of="2020/01/01"))
+        self.assertEqual(raised.exception.status_code, 422)
+
+    def test_policy_search_response_contains_temporal_governance_fields(self) -> None:
+        response = build_policy_search_response("差旅", [{
+            "score": 0.8,
+            "metadata": {"policy_id": "policy_1", "clause_id": "clause_1"},
+            "policy_document": {
+                "family_id": "family_1", "effective_date": "2020-01-01",
+                "expiry_date": "2022-01-01", "validity_status": "invalid",
+            },
+            "temporal_status": "applicable",
+        }], "2021-01-01", ["测试警告"])
+        self.assertTrue(response["temporal_filter_applied"])
+        self.assertEqual(response["as_of"], "2021-01-01")
+        self.assertEqual(response["warnings"], ["测试警告"])
+        self.assertEqual(response["results"][0]["policy"]["family_id"], "family_1")
+
 
 class PolicyPackageLayoutTests(unittest.TestCase):
     """验证制度领域模块从统一包导入，防止目录重构留下分散入口。"""
@@ -320,7 +344,6 @@ class PolicyRetrievalIntegrationTests(unittest.TestCase):
         self.assertEqual(result["clause"]["clause_no"], "第十二条")
         self.assertEqual(result["clause"]["page_start"], 2)
         self.assertEqual(result["clause"]["raw_text"], "出差人员报销差旅费应提交发票和审批单。")
-
 
 if __name__ == "__main__":
     unittest.main()

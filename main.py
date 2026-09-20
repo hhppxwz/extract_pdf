@@ -42,6 +42,7 @@ def run_process(pdf_path: str, backend: str = None):
         print(f"使用解析后端: {backend}")
 
     from pipeline import process_pdf
+    from policy.abolition import prompt_abolition_relation_insertion
 
     print(f"{datetime.datetime.now()} 正在处理: {pdf_path}")
 
@@ -49,7 +50,13 @@ def run_process(pdf_path: str, backend: str = None):
         page_count = len(doc)
     print(f"共有: {page_count}页")
 
-    result = process_pdf(pdf_path,page_count)
+    abolition_prompt = prompt_abolition_relation_insertion()
+    result = process_pdf(
+        pdf_path,
+        page_count,
+        abolition_confirmation=abolition_prompt,
+        abolition_approval_confirmation=abolition_prompt.confirm_approval,
+    )
 
     print(f"\n处理结果:")
     print(f"  文件 ID:    {result.file_id}")
@@ -60,6 +67,10 @@ def run_process(pdf_path: str, backend: str = None):
     print(f"  数据表:     {result.data_tables_stored}")
     print(f"  表单:       {result.forms_stored}")
     print(f"  待审核表:   {result.uncertain_tables}")
+    print(f"  废止候选:   {result.abolition_candidates}")
+    print(f"  已插入关系: {result.abolition_relations_inserted}")
+    print(f"  已跳过关系: {result.abolition_relations_skipped}")
+    print(f"  已批准历史关系: {result.abolition_relations_approved}")
     print(f"  耗时:       {result.duration_seconds}s")
     if result.errors:
         print(f"  错误:")
@@ -88,10 +99,16 @@ def run_process_dir(source_dir: str, backend: str = None) -> None:
 
     from batch_processor import create_batch_job, run_batch
     from policy.clause_export import export_batch_clause_structure
+    from policy.abolition import prompt_abolition_relation_insertion
 
     batch_id = create_batch_job(source_dir)
     print(f"已创建批次: {batch_id}")
-    status = run_batch(batch_id)
+    abolition_prompt = prompt_abolition_relation_insertion()
+    status = run_batch(
+        batch_id,
+        abolition_confirmation=abolition_prompt,
+        abolition_approval_confirmation=abolition_prompt.confirm_approval,
+    )
     _print_batch_summary(status)
     output_path = Path(source_dir).resolve() / f"{batch_id}_条款重组结果.json"
     exported_path = export_batch_clause_structure(batch_id, output_path)
@@ -243,6 +260,31 @@ def run_policy_abolition_review(batch_id: str, reviewer: str, limit: int) -> Non
     print(f"通过: {summary['approved']}")
     print(f"拒绝: {summary['rejected']}")
     print(f"跳过: {summary['skipped']}")
+
+
+def run_policy_governance_backfill(batch_id: str) -> None:
+    """回填批次的生效日期并生成制度族候选。"""
+    from policy.governance import backfill_policy_governance
+    summary = backfill_policy_governance(batch_id)
+    print("\n制度版本治理回填统计:")
+    for key, label in (("documents", "制度"), ("dated", "已有生效日期"),
+                       ("date_unknown", "日期未知"), ("date_conflicts", "日期冲突"),
+                       ("family_assigned", "已归族"), ("family_pending", "待确认归族"),
+                       ("family_overlaps", "版本区间重叠")):
+        print(f"{label}: {summary[key]}")
+
+
+def run_policy_governance_status(batch_id: str) -> None:
+    """显示批次的文档级版本治理状态。"""
+    from policy.governance import get_policy_governance_status
+    print(get_policy_governance_status(batch_id))
+
+
+def run_policy_family_review(batch_id: str, reviewer: str, limit: int) -> None:
+    """在终端审核制度族候选。"""
+    from policy.governance import run_interactive_family_review
+    summary = run_interactive_family_review(batch_id, reviewer, limit)
+    print(f"\n归族审核统计: 通过 {summary['approved']}，拒绝 {summary['rejected']}，跳过 {summary['skipped']}")
 
 
 def _print_quality_outputs(title: str, paths: dict[str, Path]) -> None:
@@ -493,6 +535,11 @@ if __name__ == '__main__':
         type=str,
         help="查看指定批次的制度废止关系审核状态",
     )
+    recovery_group.add_argument("--backfill-policy-governance", type=str, help="回填指定批次的制度生效日期并生成归族候选")
+    recovery_group.add_argument("--policy-governance-status", type=str, help="查看指定批次的制度版本治理状态")
+    entity_graph_group.add_argument("--review-policy-families", type=str, help="审核指定批次的制度族候选")
+    entity_graph_group.add_argument("--family-reviewer", type=str, help="制度族审核人；只可与 --review-policy-families 一起使用")
+    entity_graph_group.add_argument("--family-review-limit", type=int, default=None, help="制度族审核上限，默认 20")
     entity_graph_group.add_argument(
         "--review-policy-abolition-relations",
         type=str,
@@ -617,6 +664,9 @@ if __name__ == '__main__':
         bool(args.review_policy_run),
         bool(args.extract_policy_abolition_relations),
         bool(args.policy_abolition_relation_status),
+        bool(args.backfill_policy_governance),
+        bool(args.policy_governance_status),
+        bool(args.review_policy_families),
         bool(args.review_policy_abolition_relations),
         bool(args.export_policy_clause_review),
         bool(args.export_policy_graph_review),
@@ -660,6 +710,14 @@ if __name__ == '__main__':
             parser.error("--abolition-review-limit 必须大于等于 1")
         if not args.review_policy_abolition_relations:
             parser.error("--abolition-review-limit 只能与 --review-policy-abolition-relations 一起使用")
+    if args.family_reviewer and not args.review_policy_families:
+        parser.error("--family-reviewer 只能与 --review-policy-families 一起使用")
+    if args.review_policy_families and not str(args.family_reviewer or "").strip():
+        parser.error("--review-policy-families 必须提供非空 --family-reviewer")
+    if args.family_review_limit is not None and args.family_review_limit < 1:
+        parser.error("--family-review-limit 必须大于等于 1")
+    if args.family_review_limit is not None and not args.review_policy_families:
+        parser.error("--family-review-limit 只能与 --review-policy-families 一起使用")
     if args.review_limit < 1:
         parser.error("--review-limit 必须大于等于 1")
     if args.clauses_per_policy < 1:
@@ -718,6 +776,12 @@ if __name__ == '__main__':
         run_extract_policy_abolition_relations(args.extract_policy_abolition_relations)
     elif args.policy_abolition_relation_status:
         run_policy_abolition_relation_status(args.policy_abolition_relation_status)
+    elif args.backfill_policy_governance:
+        run_policy_governance_backfill(args.backfill_policy_governance)
+    elif args.policy_governance_status:
+        run_policy_governance_status(args.policy_governance_status)
+    elif args.review_policy_families:
+        run_policy_family_review(args.review_policy_families, args.family_reviewer, args.family_review_limit or 20)
     elif args.review_policy_abolition_relations:
         run_policy_abolition_review(
             args.review_policy_abolition_relations,

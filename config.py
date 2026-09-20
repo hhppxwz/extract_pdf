@@ -85,6 +85,23 @@ class LLMConfig:
 
 
 @dataclass
+class AnswerLLMConfig:
+    """制度问答专用的 DeepSeek OpenAI 兼容接口配置。"""
+    api_url: str = field(default_factory=lambda: os.getenv(
+        "ANSWER_LLM_API_URL", "https://api.deepseek.com"
+    ))
+    api_key: str = field(default_factory=lambda: os.getenv(
+        "ANSWER_LLM_API_KEY", ""
+    ))
+    model: str = field(default_factory=lambda: os.getenv(
+        "ANSWER_LLM_MODEL", "deepseek-flash"
+    ))
+    thinking: bool = field(default_factory=lambda: os.getenv(
+        "ANSWER_LLM_THINKING", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"})
+
+
+@dataclass
 class PostgresConfig:
     """PostgreSQL + pgvector 连接配置"""
 
@@ -134,6 +151,7 @@ class AppConfig:
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     cloudmineru: CloudMinerUConfig = field(default_factory=CloudMinerUConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    answer_llm: AnswerLLMConfig = field(default_factory=AnswerLLMConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
     minio: MinIOConfig = field(default_factory=MinIOConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)

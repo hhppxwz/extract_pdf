@@ -227,6 +227,10 @@ class ProcessingResult(BaseModel):
     data_tables_stored: int = 0
     forms_stored: int = 0
     uncertain_tables: int = 0
+    abolition_candidates: int = 0
+    abolition_relations_inserted: int = 0
+    abolition_relations_skipped: int = 0
+    abolition_relations_approved: int = 0
     errors: list[str] = Field(default_factory=list)
     duration_seconds: float = 0.0
     error_kind: Optional[ErrorKind] = None

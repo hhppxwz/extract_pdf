@@ -239,6 +239,31 @@ class PolicyAbolitionLookupTests(unittest.TestCase):
 class PolicyAbolitionStorageTests(unittest.TestCase):
     """验证人工审核才会改变被废止制度的效力状态。"""
 
+    def test_policy_tables_create_relation_query_view(self) -> None:
+        """防止关系查询缺少来源和已解析目标的可读元数据。"""
+        statements: list[str] = []
+        previous_ready = policy_storage._POLICY_TABLES_READY
+        policy_storage._POLICY_TABLES_READY = False
+        try:
+            with patch.object(
+                policy_storage.storage.relational,
+                "execute",
+                side_effect=lambda sql, *_args, **_kwargs: statements.append(sql),
+            ), patch("metadata_service._ensure_meta_tables"):
+                policy_storage.ensure_policy_tables()
+        finally:
+            policy_storage._POLICY_TABLES_READY = previous_ready
+
+        view_sql = next(
+            sql for sql in statements
+            if 'VIEW "policy_document_relations_view"' in sql
+        )
+        self.assertIn('source."title" AS source_title', view_sql)
+        self.assertIn('source."doc_number" AS source_doc_number', view_sql)
+        self.assertIn('target."title" AS resolved_target_title', view_sql)
+        self.assertIn('target."doc_number" AS resolved_target_doc_number', view_sql)
+        self.assertIn('LEFT JOIN "policy_documents" AS target', view_sql)
+
     def test_approval_invalidates_resolved_target_with_effective_date(self) -> None:
         """防止人工批准后遗漏将目标制度标为失效并记录废止日期。"""
         relation = {
@@ -532,6 +557,7 @@ class PolicyAbolitionAcceptanceTests(unittest.TestCase):
             patch.object(policy_storage, "lock_policy_document_relation", side_effect=persisted_relations.get),
             patch.object(policy_storage, "lock_policy_document", side_effect=old_documents.get),
             patch.object(policy_storage, "find_policy_document_relation_date_conflict", return_value=None),
+            patch.object(policy_storage, "upsert_policy_family_candidate"),
             patch.object(policy_storage.storage.relational, "transaction", transaction),
             patch.object(policy_storage.storage.relational, "update_rows", side_effect=update_in_memory),
         ):

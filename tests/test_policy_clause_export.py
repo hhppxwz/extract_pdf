@@ -73,11 +73,13 @@ class PolicyClauseExportTests(unittest.TestCase):
             status = {"batch": {"batch_id": "batch_1", "total_count": 1}}
             with (
                 patch("batch_processor.create_batch_job", return_value="batch_1"),
-                patch("batch_processor.run_batch", return_value=status),
+                patch("batch_processor.run_batch", return_value=status) as run_batch,
                 patch("policy.clause_export.export_batch_clause_structure", return_value=output_path) as export_structure,
             ):
                 run_process_dir(str(source_dir))
 
+        self.assertIsNotNone(run_batch.call_args.kwargs["abolition_confirmation"])
+        self.assertIsNotNone(run_batch.call_args.kwargs["abolition_approval_confirmation"])
         export_structure.assert_called_once_with("batch_1", output_path)
 
 

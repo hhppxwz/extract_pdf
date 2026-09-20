@@ -101,8 +101,8 @@ def rerank_clause_candidates(
     top_k: int,
 ) -> list[dict[str, Any]]:
     """以真实向量相似度为主、原文术语命中为辅进行去重排序。"""
-    if not 1 <= top_k <= 20:
-        raise ValueError("top_k 必须在 1 到 20 之间")
+    if not 1 <= top_k <= 100:
+        raise ValueError("top_k 必须在 1 到 100 之间")
 
     ranked: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -150,11 +150,14 @@ def _clause_no(metadata: dict[str, Any]) -> str:
 def build_policy_search_response(
     query: str,
     candidates: list[dict[str, Any]],
+    as_of: str | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """把候选条款转成 API 的可引用结果，不生成或改写任何原文。"""
     results: list[dict[str, Any]] = []
     for rank, candidate in enumerate(candidates, start=1):
         metadata = dict(candidate.get("metadata") or {})
+        document = dict(candidate.get("policy_document") or {})
         results.append({
             "rank": rank,
             "score": float(candidate.get("score", candidate.get("similarity", 0.0)) or 0.0),
@@ -165,6 +168,11 @@ def build_policy_search_response(
                 "file_id": str(metadata.get("file_id") or ""),
                 "title": str(metadata.get("title") or ""),
                 "file_name": str(metadata.get("file_name") or ""),
+                "family_id": str(document.get("family_id") or ""),
+                "effective_date": str(document.get("effective_date") or ""),
+                "expiry_date": str(document.get("expiry_date") or ""),
+                "validity_status": str(document.get("validity_status") or ""),
+                "temporal_status": str(candidate.get("temporal_status") or "unfiltered"),
             },
             "clause": {
                 "clause_id": str(metadata.get("clause_id") or ""),
@@ -175,7 +183,12 @@ def build_policy_search_response(
                 "raw_text": str(metadata.get("raw_text") or ""),
             },
         })
-    return {"query": str(query), "result_count": len(results), "results": results}
+    return {
+        "query": str(query), "as_of": as_of,
+        "temporal_filter_applied": as_of is not None,
+        "warnings": list(warnings or []),
+        "result_count": len(results), "results": results,
+    }
 
 
 def _encode_policy_clause_texts(texts: list[str]) -> list[list[float]]:
@@ -313,7 +326,9 @@ def get_policy_clause_index_status(run_id: str) -> dict[str, Any]:
     return {"run": run, "items": get_policy_clause_index_items(run_id)}
 
 
-def search_indexed_policy_clauses(query: str, top_k: int = 10) -> list[dict[str, Any]]:
+def search_indexed_policy_clauses(
+    query: str, top_k: int = 10, as_of: str | None = None
+) -> list[dict[str, Any]]:
     """在全局真实条款索引中召回并重排可引用的制度条款。"""
     query = str(query or "").strip()
     if not query:
@@ -348,4 +363,16 @@ def search_indexed_policy_clauses(query: str, top_k: int = 10) -> list[dict[str,
         raise PolicyClauseRetrievalServiceError(
             f"条款检索服务暂不可用: {exc}"
         ) from exc
-    return rerank_clause_candidates(query, candidates, top_k)
+    ranked = rerank_clause_candidates(query, candidates, 100 if as_of else top_k)
+    if as_of is None:
+        return ranked
+    from policy.storage import get_policy_documents_by_ids
+    from policy.temporal import rank_temporal_candidates
+
+    policy_ids = [str((item.get("metadata") or {}).get("policy_id") or "") for item in ranked]
+    temporal, warnings = rank_temporal_candidates(
+        ranked, get_policy_documents_by_ids(policy_ids), as_of, top_k
+    )
+    for item in temporal:
+        item["temporal_warnings"] = warnings
+    return temporal

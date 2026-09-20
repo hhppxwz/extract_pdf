@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import date
-from typing import Any
+from typing import Any, Callable, Literal
 
 from models import PolicyDocumentRelation, PolicyDocumentRelationType, PolicyReviewStatus
 from policy.storage import (
@@ -35,6 +35,13 @@ _NEGATED_ABOLITION_PREFIX_RE = re.compile(
 )
 _PARTIAL_ABOLITION_SUFFIX_RE = re.compile(r"^\s*第[^。！？!?]{0,20}[条款项]")
 _LEADING_TARGET_SUFFIX_RE = re.compile(r"^[\s，,、；;。:：]*$")
+
+AbolitionInsertionDecision = Literal["insert", "skip", "quit"]
+AbolitionInsertionConfirmation = Callable[
+    [PolicyDocumentRelation], AbolitionInsertionDecision
+]
+AbolitionApprovalDecision = Literal["approve", "skip", "quit"]
+AbolitionApprovalConfirmation = Callable[[dict[str, Any]], AbolitionApprovalDecision]
 
 
 def _is_negated_abolition_prefix(raw_text: str, trigger_start: int) -> bool:
@@ -148,6 +155,137 @@ def build_abolition_relations(clause: dict[str, Any]) -> list[PolicyDocumentRela
             review_status=PolicyReviewStatus.PENDING,
         ))
     return relations
+
+
+def scan_policy_abolition_relations(
+    policy_id: str,
+    confirm: AbolitionInsertionConfirmation,
+) -> dict[str, int]:
+    """扫描单份已结构化制度，经用户确认后保存废止候选。"""
+    relations = [
+        relation
+        for clause in get_policy_clauses(policy_id)
+        for relation in build_abolition_relations(clause)
+    ]
+    summary = {"candidates": len(relations), "inserted": 0, "skipped": 0}
+    for position, relation in enumerate(relations):
+        decision = confirm(relation)
+        if decision == "insert":
+            upsert_policy_document_relation(relation)
+            summary["inserted"] += 1
+        elif decision == "skip":
+            summary["skipped"] += 1
+        elif decision == "quit":
+            summary["skipped"] += len(relations) - position
+            break
+        else:
+            raise ValueError(f"未知的废止关系确认结果: {decision}")
+    return summary
+
+
+def reconcile_unresolved_abolition_relations(
+    policy_id: str,
+    confirm: AbolitionApprovalConfirmation,
+) -> dict[str, int]:
+    """将新入库制度与历史未解析废止关系匹配，并在确认后批准。"""
+    matched = []
+    for relation in list_policy_document_relations():
+        if (
+            relation.get("review_status") != PolicyReviewStatus.PENDING.value
+            or relation.get("target_policy_id")
+        ):
+            continue
+        resolved_id = resolve_abolition_target(
+            str(relation.get("target_title") or ""),
+            str(relation.get("target_doc_number") or ""),
+        )
+        if resolved_id == policy_id:
+            matched.append(relation)
+
+    summary = {"matched": len(matched), "approved": 0, "skipped": 0}
+    for position, relation in enumerate(matched):
+        decision = confirm(relation)
+        if decision == "approve":
+            review_policy_document_relation(
+                str(relation["relation_id"]),
+                PolicyReviewStatus.APPROVED.value,
+                "pdf_import_interactive",
+                review_note="目标制度后入库时经用户确认",
+                target_policy_id=policy_id,
+                effective_date=relation.get("effective_date"),
+            )
+            summary["approved"] += 1
+        elif decision == "skip":
+            summary["skipped"] += 1
+        elif decision == "quit":
+            summary["skipped"] += len(matched) - position
+            break
+        else:
+            raise ValueError(f"未知的历史废止关系确认结果: {decision}")
+    return summary
+
+
+class InteractiveAbolitionPrompter:
+    """在一次命令中共享退出状态的废止关系终端确认器。"""
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    @staticmethod
+    def _value(relation: Any, name: str) -> Any:
+        return relation.get(name) if isinstance(relation, dict) else getattr(relation, name, None)
+
+    def _show(self, relation: Any, title: str) -> None:
+        source_policy_id = str(self._value(relation, "source_policy_id") or "")
+        source = get_policy_document(policy_id=source_policy_id) or {}
+        print("\n" + "=" * 72)
+        print(title)
+        print(f"来源制度: {source.get('title') or source.get('file_name') or source_policy_id}")
+        print(f"目标标题: {self._value(relation, 'target_title') or ''}")
+        print(f"目标文号: {self._value(relation, 'target_doc_number') or '未识别'}")
+        print(f"目标制度 ID: {self._value(relation, 'target_policy_id') or '未解析'}")
+        print(f"废止日期: {self._value(relation, 'effective_date') or '未识别'}")
+        page_start = self._value(relation, "page_start") or 0
+        page_end = self._value(relation, "page_end") or 0
+        print(f"页码: {page_start}-{page_end}")
+        print(f"证据原文: {self._value(relation, 'evidence_text') or ''}")
+
+    def _read(self, prompt: str, accepted: dict[str, str]) -> str:
+        while True:
+            try:
+                action = input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                self.stopped = True
+                print("\n输入已结束，本次命令不再询问废止关系。")
+                return "quit"
+            if action in accepted:
+                if action == "q":
+                    self.stopped = True
+                return accepted[action]
+            print("请输入 y、n 或 q。")
+
+    def __call__(self, relation: PolicyDocumentRelation) -> AbolitionInsertionDecision:
+        if self.stopped:
+            return "quit"
+        self._show(relation, "识别到制度废止关系")
+        return self._read(
+            "是否插入废止关系？[y]插入 [n]跳过 [q]结束询问: ",
+            {"y": "insert", "n": "skip", "q": "quit"},
+        )  # type: ignore[return-value]
+
+    def confirm_approval(self, relation: dict[str, Any]) -> AbolitionApprovalDecision:
+        if self.stopped:
+            return "quit"
+        self._show(relation, "发现指向本制度的历史废止关系")
+        return self._read(
+            "是否批准并将本制度标记为废止？[y]批准 [n]跳过 [q]结束询问: ",
+            {"y": "approve", "n": "skip", "q": "quit"},
+        )  # type: ignore[return-value]
+
+
+def prompt_abolition_relation_insertion() -> InteractiveAbolitionPrompter:
+    """创建一次命令共用的废止关系终端确认会话。"""
+    return InteractiveAbolitionPrompter()
 
 
 def extract_batch_abolition_relations(batch_id: str) -> dict[str, int]:

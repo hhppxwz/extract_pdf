@@ -6,7 +6,7 @@ import time
 import datetime
 import traceback
 
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from config import app_config
 from document_classfier import classify_document
@@ -214,12 +214,16 @@ def process_pdf(
     file_path: str,
     page_count: int = 0,
     source_file_name: str | None = None,
+    abolition_confirmation: Callable[[Any], str] | None = None,
+    abolition_approval_confirmation: Callable[[dict[str, Any]], str] | None = None,
 ) -> ProcessingResult:
     t_start = time.time()
     errors: list[str] = []
     file_id = ""
     has_critical_error = False
     final_status = ProcessingStatus.DONE
+    abolition_summary = {"candidates": 0, "inserted": 0, "skipped": 0}
+    abolition_reconciliation = {"matched": 0, "approved": 0, "skipped": 0}
 
 
     try:
@@ -327,6 +331,29 @@ def process_pdf(
                     f"{structure_result['clause_count']} 条，"
                     f"质量 {structure_result['parse_quality']:.3f}"
                 )
+                if abolition_confirmation is not None or abolition_approval_confirmation is not None:
+                    from policy.abolition import (
+                        reconcile_unresolved_abolition_relations,
+                        scan_policy_abolition_relations,
+                    )
+                if abolition_approval_confirmation is not None:
+                    try:
+                        abolition_reconciliation = reconcile_unresolved_abolition_relations(
+                            str(structure_result["policy_id"]),
+                            abolition_approval_confirmation,
+                        )
+                    except Exception:
+                        # 历史关系回查失败不影响当前文件候选的识别。
+                        errors.append(f"历史废止关系回查或确认失败: {traceback.format_exc()}")
+                if abolition_confirmation is not None:
+                    try:
+                        abolition_summary = scan_policy_abolition_relations(
+                            str(structure_result["policy_id"]),
+                            abolition_confirmation,
+                        )
+                    except Exception:
+                        # 废止候选识别和确认失败不能破坏已经完成的 PDF 解析。
+                        errors.append(f"废止关系识别或确认失败: {traceback.format_exc()}")
             except Exception as e:
                 errors.append(f"制度条款结构化失败: {traceback.format_exc()}")
 
@@ -413,6 +440,10 @@ def process_pdf(
             data_tables_stored=dt_stored,
             forms_stored=form_stored,
             uncertain_tables=uncertain_count,
+            abolition_candidates=abolition_summary["candidates"],
+            abolition_relations_inserted=abolition_summary["inserted"],
+            abolition_relations_skipped=abolition_summary["skipped"],
+            abolition_relations_approved=abolition_reconciliation["approved"],
             errors=errors,
             duration_seconds=round(time.time() - t_start, 2),
         )

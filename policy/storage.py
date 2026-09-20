@@ -34,8 +34,11 @@ from storage_adapter import storage
 
 
 TABLE_POLICY_DOCUMENTS = "policy_documents"
+TABLE_POLICY_FAMILIES = "policy_families"
+TABLE_POLICY_FAMILY_CANDIDATES = "policy_family_candidates"
 TABLE_POLICY_CLAUSES = "policy_clauses"
 TABLE_POLICY_DOCUMENT_RELATIONS = "policy_document_relations"
+VIEW_POLICY_DOCUMENT_RELATIONS = "policy_document_relations_view"
 TABLE_POLICY_RUNS = "policy_extraction_runs"
 TABLE_POLICY_ITEMS = "policy_extraction_items"
 TABLE_POLICY_ENTITIES = "policy_entities"
@@ -62,6 +65,14 @@ def ensure_policy_tables() -> None:
 
     _ensure_meta_tables()
     storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_FAMILIES}" (
+            family_id VARCHAR(96) PRIMARY KEY,
+            canonical_title TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )'''
+    )
+    storage.relational.execute(
         f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_DOCUMENTS}" (
             policy_id VARCHAR(96) PRIMARY KEY,
             file_id VARCHAR(64) NOT NULL UNIQUE REFERENCES "pdf_files"(file_id),
@@ -83,6 +94,10 @@ def ensure_policy_tables() -> None:
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )'''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_DOCUMENTS}" ADD COLUMN IF NOT EXISTS '
+        f'"family_id" VARCHAR(96) REFERENCES "{TABLE_POLICY_FAMILIES}"(family_id)'
     )
     storage.relational.execute(
         f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_CLAUSES}" (
@@ -351,6 +366,35 @@ def ensure_policy_tables() -> None:
             created_at TIMESTAMP DEFAULT NOW()
         )'''
     )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_FAMILY_CANDIDATES}" (
+            candidate_id VARCHAR(128) PRIMARY KEY,
+            source_policy_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_DOCUMENTS}"(policy_id),
+            target_policy_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_DOCUMENTS}"(policy_id),
+            relation_id VARCHAR(128) REFERENCES "{TABLE_POLICY_DOCUMENT_RELATIONS}"(relation_id),
+            normalized_title TEXT NOT NULL DEFAULT '',
+            reason VARCHAR(32) NOT NULL,
+            review_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+            reviewer TEXT NOT NULL DEFAULT '',
+            review_note TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(source_policy_id, target_policy_id, reason)
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE OR REPLACE VIEW "{VIEW_POLICY_DOCUMENT_RELATIONS}" AS
+            SELECT relation.*,
+                   source."title" AS source_title,
+                   source."doc_number" AS source_doc_number,
+                   target."title" AS resolved_target_title,
+                   target."doc_number" AS resolved_target_doc_number
+            FROM "{TABLE_POLICY_DOCUMENT_RELATIONS}" AS relation
+            JOIN "{TABLE_POLICY_DOCUMENTS}" AS source
+              ON source."policy_id" = relation."source_policy_id"
+            LEFT JOIN "{TABLE_POLICY_DOCUMENTS}" AS target
+              ON target."policy_id" = relation."target_policy_id"'''
+    )
     for table, index, columns in (
         (TABLE_POLICY_CLAUSES, "policy_clauses_policy_idx", "policy_id, sequence_no"),
         (TABLE_POLICY_DOCUMENT_RELATIONS, "policy_document_relations_source_idx", "source_policy_id, review_status"),
@@ -410,8 +454,8 @@ def upsert_policy_document(
                 doc_number = EXCLUDED.doc_number,
                 issuing_department = EXCLUDED.issuing_department,
                 issue_date = EXCLUDED.issue_date,
-                effective_date = EXCLUDED.effective_date,
-                expiry_date = EXCLUDED.expiry_date,
+                effective_date = COALESCE("{TABLE_POLICY_DOCUMENTS}".effective_date, EXCLUDED.effective_date),
+                expiry_date = COALESCE("{TABLE_POLICY_DOCUMENTS}".expiry_date, EXCLUDED.expiry_date),
                 version = EXCLUDED.version,
                 original_pdf_url = EXCLUDED.original_pdf_url,
                 parse_quality = EXCLUDED.parse_quality,
@@ -545,6 +589,121 @@ def get_policy_document(policy_id: str = "", file_id: str = "") -> Optional[dict
         return None
     rows = storage.relational.query(TABLE_POLICY_DOCUMENTS, where, 1, params)
     return rows[0] if rows else None
+
+
+def get_policy_documents_by_ids(policy_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """批量读取制度最新治理字段，供时间检索使用。"""
+    ids = sorted({str(item) for item in policy_ids if str(item).strip()})
+    if not ids:
+        return {}
+    ensure_policy_tables()
+    placeholders = ", ".join(["%s"] * len(ids))
+    rows = storage.relational.query(
+        TABLE_POLICY_DOCUMENTS,
+        f'"policy_id" IN ({placeholders})',
+        len(ids),
+        tuple(ids),
+    )
+    return {str(row["policy_id"]): row for row in rows}
+
+
+def upsert_policy_family_candidate(
+    source_policy_id: str, target_policy_id: str, reason: str,
+    normalized_title: str = "", relation_id: str | None = None,
+) -> str:
+    """幂等保存必须人工确认的制度归族候选。"""
+    ensure_policy_tables()
+    candidate_id = f"family_candidate_{uuid.uuid4().hex}"
+    storage.relational.execute(
+        f'''INSERT INTO "{TABLE_POLICY_FAMILY_CANDIDATES}"
+            (candidate_id, source_policy_id, target_policy_id, relation_id,
+             normalized_title, reason) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (source_policy_id, target_policy_id, reason) DO UPDATE SET
+                relation_id = COALESCE("{TABLE_POLICY_FAMILY_CANDIDATES}".relation_id, EXCLUDED.relation_id),
+                normalized_title = CASE
+                    WHEN "{TABLE_POLICY_FAMILY_CANDIDATES}".normalized_title = ''
+                    THEN EXCLUDED.normalized_title
+                    ELSE "{TABLE_POLICY_FAMILY_CANDIDATES}".normalized_title
+                END,
+                updated_at = NOW()''',
+        (candidate_id, source_policy_id, target_policy_id, relation_id, normalized_title, reason),
+    )
+    rows = storage.relational.query(
+        TABLE_POLICY_FAMILY_CANDIDATES,
+        '"source_policy_id" = %s AND "target_policy_id" = %s AND "reason" = %s',
+        1, (source_policy_id, target_policy_id, reason),
+    )
+    return str(rows[0]["candidate_id"]) if rows else candidate_id
+
+
+def list_policy_family_candidates(batch_id: str = "") -> list[dict[str, Any]]:
+    """列出制度归族候选，可按候选任一端所属批次过滤。"""
+    ensure_policy_tables()
+    rows = storage.relational.query(TABLE_POLICY_FAMILY_CANDIDATES, "", 100000, ())
+    if not batch_id:
+        return rows
+    ids = {str(item["policy_id"]) for item in get_policy_documents_for_batch(batch_id)}
+    return [row for row in rows if row.get("source_policy_id") in ids or row.get("target_policy_id") in ids]
+
+
+def review_policy_family_candidate(
+    candidate_id: str, decision: str, reviewer: str,
+    family_id: str | None = None, canonical_title: str = "", review_note: str = "",
+) -> dict[str, Any]:
+    """审核归族候选；批准时创建或复用制度族并保证不静默合并不同族。"""
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("归族审核仅支持 approved 或 rejected")
+    with storage.relational.transaction():
+        rows = storage.relational.query_for_update(
+            TABLE_POLICY_FAMILY_CANDIDATES, '"candidate_id" = %s', 1, (candidate_id,)
+        )
+        if not rows:
+            raise ValueError(f"归族候选不存在: {candidate_id}")
+        candidate = rows[0]
+        if candidate.get("review_status") != "pending":
+            raise ValueError("归族候选已审核")
+        if decision == "approved":
+            documents = get_policy_documents_by_ids([
+                str(candidate["source_policy_id"]), str(candidate["target_policy_id"])
+            ])
+            source = documents[str(candidate["source_policy_id"])]
+            target = documents[str(candidate["target_policy_id"])]
+            existing = {str(value) for value in (source.get("family_id"), target.get("family_id")) if value}
+            if len(existing) > 1:
+                raise ValueError("两份制度已属于不同制度族，禁止静默合并")
+            if family_id and existing and family_id not in existing:
+                raise ValueError("候选文档已有制度族，不能改挂到另一个制度族")
+            resolved_family_id = family_id or (next(iter(existing)) if existing else f"family_{uuid.uuid4().hex}")
+            if family_id and not existing:
+                family_rows = storage.relational.query(
+                    TABLE_POLICY_FAMILIES, '"family_id" = %s', 1, (family_id,)
+                )
+                if not family_rows:
+                    raise ValueError(f"指定制度族不存在: {family_id}")
+            if not existing and not family_id:
+                from policy.temporal import normalize_family_title
+
+                default_title = (
+                    candidate.get("normalized_title")
+                    or normalize_family_title(str(target.get("title") or ""))
+                    or normalize_family_title(str(source.get("title") or ""))
+                )
+                storage.relational.execute(
+                    f'''INSERT INTO "{TABLE_POLICY_FAMILIES}" (family_id, canonical_title)
+                        VALUES (%s, %s) ON CONFLICT (family_id) DO NOTHING''',
+                    (resolved_family_id, canonical_title or default_title),
+                )
+            for policy_id in (candidate["source_policy_id"], candidate["target_policy_id"]):
+                storage.relational.update_rows(
+                    TABLE_POLICY_DOCUMENTS, {"family_id": resolved_family_id},
+                    '"policy_id" = %s', (policy_id,),
+                )
+        storage.relational.update_rows(
+            TABLE_POLICY_FAMILY_CANDIDATES,
+            {"review_status": decision, "reviewer": reviewer, "review_note": review_note, "updated_at": datetime.now()},
+            '"candidate_id" = %s', (candidate_id,),
+        )
+    return {**candidate, "review_status": decision}
 
 
 def get_policy_documents_for_batch(batch_id: str) -> list[dict[str, Any]]:
@@ -784,6 +943,17 @@ def review_policy_document_relation(
                 '"policy_id" = %s',
                 (resolved_target_policy_id,),
             )
+            # 废止不必然代表同一制度族，只生成待人工确认的归族候选。
+            if relation.get("source_policy_id"):
+                from policy.temporal import normalize_family_title
+
+                upsert_policy_family_candidate(
+                    str(relation["source_policy_id"]),
+                    str(resolved_target_policy_id),
+                    "approved_abolition",
+                    normalize_family_title(str(relation.get("target_title") or "")),
+                    relation_id=relation_id,
+                )
     return {**relation, **values}
 
 

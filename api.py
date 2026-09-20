@@ -3,13 +3,15 @@ FastAPI REST 接口
 提供 PDF 上传、状态查询、检索等功能。
 """
 import os
+import re
 import tempfile
 import json
+from datetime import date
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Query, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from models import ProcessingStatus
 from pipeline import process_pdf
@@ -126,11 +128,20 @@ async def search_text(
 async def policy_search(
     q: str = Query(..., min_length=1, description="办事问题或制度条款查询"),
     top_k: int = Query(10, ge=1, le=20, description="返回条款数，范围 1 到 20"),
+    as_of: Optional[str] = Query(None, description="可选适用日期，格式 YYYY-MM-DD"),
 ):
     """跨制度检索可回查条款，始终返回原文证据而非生成式答案。"""
     query = q.strip()
     if not query:
         raise HTTPException(status_code=422, detail="检索问题不能为空")
+    if not isinstance(as_of, str):
+        as_of = None
+    if as_of is not None:
+        from datetime import date
+        try:
+            as_of = date.fromisoformat(as_of).isoformat()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="as_of 必须是 YYYY-MM-DD") from exc
 
     from policy.retrieval import (
         PolicyClauseIndexNotReadyError,
@@ -140,14 +151,49 @@ async def policy_search(
     )
 
     try:
-        candidates = search_indexed_policy_clauses(query, top_k)
+        candidates = search_indexed_policy_clauses(query, top_k, as_of=as_of)
     except PolicyClauseIndexNotReadyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PolicyClauseRetrievalServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return JSONResponse(content=build_policy_search_response(query, candidates))
+    warnings = list(candidates[0].get("temporal_warnings") or []) if candidates else []
+    return JSONResponse(content=build_policy_search_response(query, candidates, as_of, warnings))
+
+
+@app.post("/policy-answer")
+async def policy_answer(
+    question: str = Form(..., min_length=1, description="制度咨询或合规判断问题"),
+    as_of: Optional[str] = Form(
+        None,
+        description="可选适用日期，格式 YYYY-MM-DD",
+        json_schema_extra={"format": "date"},
+    ),
+):
+    """接收 Swagger 表单，并基于多份制度条款证据生成带原文引用的初步回答。"""
+    from policy.answering import answer_policy_question
+    from policy.retrieval import PolicyClauseIndexNotReadyError, PolicyClauseRetrievalServiceError
+
+    try:
+        if as_of and re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of) is None:
+            raise ValueError("as_of 必须是有效的 YYYY-MM-DD 日期")
+        normalized_as_of = date.fromisoformat(as_of).isoformat() if as_of else None
+        result = answer_policy_question(question, normalized_as_of)
+    except PolicyClauseIndexNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyClauseRetrievalServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content=result)
+
+
+@app.get("/policy-qa", response_class=HTMLResponse)
+async def policy_qa_page():
+    """提供无需前端构建工具的制度问答页面。"""
+    from policy.answer_ui import render_policy_qa_page
+    return HTMLResponse(render_policy_qa_page())
 
 
 @app.get("/policy-workflow-graph/{run_id}")

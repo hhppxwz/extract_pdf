@@ -18,6 +18,9 @@ def is_valid_file_id(file_id: str) -> bool:
 
 def _is_missing_table_error(error: Exception) -> bool:
     """将尚未创建的可选产物表视为没有可清理内容。"""
+    pgcode = getattr(error, "pgcode", None)
+    if pgcode is not None:
+        return pgcode == "42P01"
     text = str(error).lower()
     return "does not exist" in text or "undefinedtable" in text
 
@@ -149,6 +152,31 @@ def reset_file_database_artifacts(file_id: str) -> dict[str, int]:
                     params=(policy_id,),
                 )
             ) or []
+            # 所有直接引用条款的自动产物必须先清理，否则 PostgreSQL 外键会阻止删条款。
+            clause_dependents = (
+                "policy_process_items",
+                "policy_process_labels",
+                "policy_extraction_items",
+                "policy_entities",
+                "policy_relations",
+                "policy_manual_annotations",
+            )
+            for table_name in clause_dependents:
+                _ignore_missing_table(
+                    lambda table_name=table_name: storage.relational.execute(
+                        f'DELETE FROM "{table_name}" WHERE "clause_id" IN '
+                        '(SELECT "clause_id" FROM "policy_clauses" WHERE "policy_id" = %s)',
+                        (policy_id,),
+                    )
+                )
+            _ignore_missing_table(
+                lambda: storage.relational.execute(
+                    'DELETE FROM "policy_document_relations" '
+                    'WHERE "source_policy_id" = %s OR "evidence_clause_id" IN '
+                    '(SELECT "clause_id" FROM "policy_clauses" WHERE "policy_id" = %s)',
+                    (policy_id, policy_id),
+                )
+            )
             _ignore_missing_table(
                 lambda: storage.relational.execute(
                     'DELETE FROM "policy_clauses" WHERE "policy_id" = %s',
