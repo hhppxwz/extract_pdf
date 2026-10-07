@@ -128,6 +128,34 @@ def _merge_by_article(text_blocks: list) -> list:
     return merged
 
 
+def _merge_by_policy_heading(text_blocks: list) -> list:
+    """无正式条号的制度，按章标题和原有编号分割，保留完整正文。"""
+    heading_pattern = re.compile(
+        r"^(?:第\s*[0-9一二三四五六七八九十百千万零〇两]+\s*(?:编|章|节)|"
+        r"[一二三四五六七八九十百千万零〇两]+\s*[、．.]\s*|"
+        r"[（(]\s*(?:[一二三四五六七八九十百千万零〇两]+|\d+)\s*[）)]\s*|"
+        r"\d+\s*[、．.](?!\d)\s*|\d+(?:[.．]\d+)+[ \t]+)"
+    )
+    merged = []
+    current = {"text": "", "page_num": 0}
+    for block in sorted(text_blocks, key=lambda item: item.page_num):
+        # 解析器可能将多个编号段落放在同一块中，逐行检查才能保留原有边界。
+        for line in block.content.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            # 编号本身就是边界，不因正文较长或带句末标点而取消分割。
+            if heading_pattern.match(text) and current["text"]:
+                merged.append(current)
+                current = {"text": "", "page_num": block.page_num}
+            if not current["text"]:
+                current["page_num"] = block.page_num
+            current["text"] = f"{current['text']}\n{text}".strip()
+    if current["text"]:
+        merged.append(current)
+    return merged
+
+
 def _merge_by_page(text_blocks: list) -> list:
     """
     行政表单：按页码合并（不跨页），每一页作为一个独立的逻辑单元
@@ -307,14 +335,19 @@ def process_text_blocks(
         merged_units = _merge_by_heading(text_blocks)
         print(f"[重组] 学术论文: {len(text_blocks)} 个原始块 → {len(merged_units)} 个章节单元")
     elif doc_type == "policy_regulation":
-        merged_units = _merge_by_article(text_blocks)
         number = r"[0-9一二三四五六七八九十百千万零〇两]+"
         chapter_pattern = re.compile(rf"^\s*第\s*{number}\s*章", re.M)
         article_pattern = re.compile(rf"^\s*第\s*{number}\s*条(?!款)", re.M)
         chapter_count = sum(len(chapter_pattern.findall(block.content)) for block in text_blocks)
         article_count = sum(len(article_pattern.findall(block.content)) for block in text_blocks)
+        if article_count == 0:
+            merged_units = _merge_by_policy_heading(text_blocks)
+            unit_name = "编号单元"
+        else:
+            merged_units = _merge_by_article(text_blocks)
+            unit_name = "条款单元"
         print(
-            f"[重组] 政策制度: {len(text_blocks)} 个原始块 → {len(merged_units)} 个条款单元"
+            f"[重组] 政策制度: {len(text_blocks)} 个原始块 → {len(merged_units)} 个{unit_name}"
             f"（{chapter_count} 章，{article_count} 条）"
         )
     elif doc_type == "admin_form":

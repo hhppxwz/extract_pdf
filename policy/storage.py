@@ -48,8 +48,17 @@ TABLE_POLICY_MANUAL_ANNOTATIONS = "policy_manual_annotations"
 TABLE_POLICY_PROCESS_RUNS = "policy_process_runs"
 TABLE_POLICY_PROCESS_ITEMS = "policy_process_items"
 TABLE_POLICY_PROCESS_LABELS = "policy_process_labels"
+TABLE_POLICY_CLASSIFICATION_RUNS = "policy_clause_classification_runs"
+TABLE_POLICY_CLASSIFICATION_ITEMS = "policy_clause_classification_items"
+TABLE_POLICY_CLASSIFICATION_RESULTS = "policy_clause_classification_results"
 TABLE_POLICY_CLAUSE_INDEX_RUNS = "policy_clause_index_runs"
 TABLE_POLICY_CLAUSE_INDEX_ITEMS = "policy_clause_index_items"
+TABLE_POLICY_KNOWLEDGE_RUNS_V2 = "policy_knowledge_runs_v2"
+TABLE_POLICY_KNOWLEDGE_ITEMS_V2 = "policy_knowledge_items_v2"
+TABLE_POLICY_ASSERTIONS_V2 = "policy_assertions_v2"
+TABLE_POLICY_ASSERTION_REVIEWS_V2 = "policy_assertion_reviews_v2"
+TABLE_POLICY_MATTERS_V2 = "policy_matters_v2"
+TABLE_POLICY_MATTER_MEMBERS_V2 = "policy_matter_members_v2"
 
 _POLICY_TABLES_READY = False
 
@@ -75,7 +84,7 @@ def ensure_policy_tables() -> None:
     storage.relational.execute(
         f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_DOCUMENTS}" (
             policy_id VARCHAR(96) PRIMARY KEY,
-            file_id VARCHAR(64) NOT NULL UNIQUE REFERENCES "pdf_files"(file_id),
+            file_id VARCHAR(64) NOT NULL REFERENCES "pdf_files"(file_id),
             file_name TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL DEFAULT '',
             doc_number TEXT NOT NULL DEFAULT '',
@@ -83,7 +92,7 @@ def ensure_policy_tables() -> None:
             issue_date DATE,
             effective_date DATE,
             expiry_date DATE,
-            validity_status VARCHAR(20) NOT NULL DEFAULT 'unknown'
+            validity_status VARCHAR(20) NOT NULL DEFAULT 'current'
                 CHECK (validity_status IN ('current', 'invalid', 'unknown')),
             version TEXT NOT NULL DEFAULT '',
             original_pdf_url TEXT NOT NULL DEFAULT '',
@@ -98,6 +107,22 @@ def ensure_policy_tables() -> None:
     storage.relational.execute(
         f'ALTER TABLE "{TABLE_POLICY_DOCUMENTS}" ADD COLUMN IF NOT EXISTS '
         f'"family_id" VARCHAR(96) REFERENCES "{TABLE_POLICY_FAMILIES}"(family_id)'
+    )
+    # 原单制度记录使用空键，保持已有 ID；同一文件的其他制度独立使用稳定键。
+    storage.relational.execute(f'''ALTER TABLE "{TABLE_POLICY_DOCUMENTS}"
+        ADD COLUMN IF NOT EXISTS document_key TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS source_page_start INTEGER,
+        ADD COLUMN IF NOT EXISTS source_page_end INTEGER''')
+    storage.relational.execute(f'ALTER TABLE "{TABLE_POLICY_DOCUMENTS}" DROP CONSTRAINT IF EXISTS policy_documents_file_id_key')
+    storage.relational.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS policy_documents_file_document_key_idx '
+                               f'ON "{TABLE_POLICY_DOCUMENTS}" (file_id, document_key)')
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_DOCUMENTS}" ADD COLUMN IF NOT EXISTS '
+        '"notice_title" TEXT NOT NULL DEFAULT \'\''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_DOCUMENTS}" ADD COLUMN IF NOT EXISTS '
+        '"doc_number_raw" TEXT NOT NULL DEFAULT \'\''
     )
     storage.relational.execute(
         f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_CLAUSES}" (
@@ -367,6 +392,61 @@ def ensure_policy_tables() -> None:
         )'''
     )
     storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_CLASSIFICATION_RUNS}" (
+            run_id VARCHAR(96) PRIMARY KEY,
+            batch_id VARCHAR(64) NOT NULL REFERENCES "pdf_batches"(batch_id),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            parser_version TEXT NOT NULL DEFAULT '',
+            embedding_model TEXT NOT NULL DEFAULT '',
+            llm_model TEXT NOT NULL DEFAULT '',
+            pipeline_version TEXT NOT NULL DEFAULT '',
+            prompt_version TEXT NOT NULL DEFAULT '',
+            rule_version TEXT NOT NULL DEFAULT '',
+            schema_version TEXT NOT NULL DEFAULT '',
+            total_count INTEGER NOT NULL DEFAULT 0,
+            succeeded_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(),
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_CLASSIFICATION_ITEMS}" (
+            item_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_CLASSIFICATION_RUNS}"(run_id)
+                ON DELETE CASCADE,
+            clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            last_error TEXT NOT NULL DEFAULT '',
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            UNIQUE(run_id, clause_id)
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_CLASSIFICATION_RESULTS}" (
+            result_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_CLASSIFICATION_RUNS}"(run_id)
+                ON DELETE CASCADE,
+            clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            labels JSONB NOT NULL DEFAULT '[]'::jsonb,
+            evidence JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+            reason TEXT NOT NULL DEFAULT '',
+            confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+            source VARCHAR(20) NOT NULL,
+            review_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            reviewed_labels JSONB,
+            reviewed_evidence JSONB,
+            reviewer TEXT NOT NULL DEFAULT '',
+            review_note TEXT NOT NULL DEFAULT '',
+            reviewed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(run_id, clause_id)
+        )'''
+    )
+    storage.relational.execute(
         f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_FAMILY_CANDIDATES}" (
             candidate_id VARCHAR(128) PRIMARY KEY,
             source_policy_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_DOCUMENTS}"(policy_id),
@@ -380,6 +460,88 @@ def ensure_policy_tables() -> None:
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(source_policy_id, target_policy_id, reason)
+        )'''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_CLASSIFICATION_RESULTS}" ADD COLUMN IF NOT EXISTS '
+        f'"reviewed_evidence" JSONB'
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}" (
+            run_id VARCHAR(96) PRIMARY KEY,
+            batch_id VARCHAR(64) NOT NULL REFERENCES "pdf_batches"(batch_id),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            parser_version TEXT NOT NULL DEFAULT '', embedding_model TEXT NOT NULL DEFAULT '',
+            llm_model TEXT NOT NULL DEFAULT '', pipeline_version TEXT NOT NULL DEFAULT '',
+            prompt_version TEXT NOT NULL DEFAULT '', rule_version TEXT NOT NULL DEFAULT '',
+            schema_version TEXT NOT NULL DEFAULT '', context_ancestor_depth INTEGER NOT NULL DEFAULT 1,
+            index_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+            index_error TEXT NOT NULL DEFAULT '', total_count INTEGER NOT NULL DEFAULT 0,
+            succeeded_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(), started_at TIMESTAMP, finished_at TIMESTAMP
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_KNOWLEDGE_ITEMS_V2}" (
+            item_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}"(run_id) ON DELETE CASCADE,
+            clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending', last_error TEXT NOT NULL DEFAULT '',
+            started_at TIMESTAMP, finished_at TIMESTAMP, UNIQUE(run_id, clause_id)
+        )'''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}" ADD COLUMN IF NOT EXISTS '
+        f'"index_status" VARCHAR(24) NOT NULL DEFAULT \'pending\''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}" ADD COLUMN IF NOT EXISTS '
+        f'"index_error" TEXT NOT NULL DEFAULT \'\''
+    )
+    storage.relational.execute(
+        f'ALTER TABLE "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}" ADD COLUMN IF NOT EXISTS '
+        f'"context_ancestor_depth" INTEGER NOT NULL DEFAULT 1'
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_ASSERTIONS_V2}" (
+            assertion_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}"(run_id) ON DELETE CASCADE,
+            policy_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_DOCUMENTS}"(policy_id),
+            clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            kind VARCHAR(24) NOT NULL, modality VARCHAR(24) NOT NULL,
+            subject_text TEXT NOT NULL DEFAULT '', predicate_text TEXT NOT NULL DEFAULT '',
+            object_text TEXT NOT NULL DEFAULT '', receiver_text TEXT NOT NULL DEFAULT '',
+            evidence_text TEXT NOT NULL DEFAULT '', evidence_start INTEGER NOT NULL DEFAULT 0,
+            evidence_end INTEGER NOT NULL DEFAULT 0, payload JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+            status VARCHAR(24) NOT NULL DEFAULT 'machine_extracted', confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(run_id, assertion_id)
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_ASSERTION_REVIEWS_V2}" (
+            review_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}"(run_id) ON DELETE CASCADE,
+            assertion_id VARCHAR(128), clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            decision VARCHAR(24) NOT NULL, corrected_payload JSONB,
+            reviewer TEXT NOT NULL DEFAULT '', review_note TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT NOW()
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_MATTERS_V2}" (
+            matter_id VARCHAR(128) PRIMARY KEY,
+            run_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}"(run_id) ON DELETE CASCADE,
+            policy_id VARCHAR(96) NOT NULL REFERENCES "{TABLE_POLICY_DOCUMENTS}"(policy_id),
+            container_clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            name TEXT NOT NULL DEFAULT '', source VARCHAR(32) NOT NULL DEFAULT 'explicit_structure',
+            review_status VARCHAR(24) NOT NULL DEFAULT 'machine_extracted', created_at TIMESTAMP DEFAULT NOW()
+        )'''
+    )
+    storage.relational.execute(
+        f'''CREATE TABLE IF NOT EXISTS "{TABLE_POLICY_MATTER_MEMBERS_V2}" (
+            matter_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_MATTERS_V2}"(matter_id) ON DELETE CASCADE,
+            clause_id VARCHAR(128) NOT NULL REFERENCES "{TABLE_POLICY_CLAUSES}"(clause_id),
+            sequence_no INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(matter_id, clause_id)
         )'''
     )
     storage.relational.execute(
@@ -405,12 +567,37 @@ def ensure_policy_tables() -> None:
         (TABLE_POLICY_MANUAL_ANNOTATIONS, "policy_manual_annotations_run_idx", "run_id, clause_id"),
         (TABLE_POLICY_PROCESS_ITEMS, "policy_process_items_run_idx", "run_id, status"),
         (TABLE_POLICY_PROCESS_LABELS, "policy_process_labels_run_idx", "run_id, decision, review_status"),
+        (TABLE_POLICY_CLASSIFICATION_ITEMS, "policy_clause_classification_items_run_idx", "run_id, status"),
+        (TABLE_POLICY_CLASSIFICATION_RESULTS, "policy_clause_classification_results_run_idx", "run_id, review_status"),
         (TABLE_POLICY_CLAUSE_INDEX_ITEMS, "policy_clause_index_items_run_idx", "run_id, status"),
+        (TABLE_POLICY_KNOWLEDGE_ITEMS_V2, "policy_knowledge_items_v2_run_idx", "run_id, status"),
+        (TABLE_POLICY_ASSERTIONS_V2, "policy_assertions_v2_lookup_idx", "run_id, policy_id, clause_id, status"),
+        (TABLE_POLICY_MATTERS_V2, "policy_matters_v2_run_idx", "run_id, policy_id"),
     ):
         storage.relational.execute(
             f'CREATE INDEX IF NOT EXISTS "{index}" ON "{table}" ({columns})'
         )
+    storage.relational.execute(f"ALTER TABLE {TABLE_POLICY_DOCUMENTS} ALTER COLUMN validity_status SET DEFAULT 'current'")
     _POLICY_TABLES_READY = True
+    backfill_default_policy_validity()
+
+
+def backfill_default_policy_validity() -> None:
+    """回填已完成制度的默认效力，保留已确认废止及尚未解决的冲突。"""
+    ensure_policy_tables()
+    with storage.relational.transaction():
+        storage.relational.execute(f'''UPDATE {TABLE_POLICY_DOCUMENTS} AS document
+            SET validity_status = 'invalid', updated_at = NOW()
+            WHERE document.structure_status = 'succeeded' AND document.validity_status = 'unknown'
+              AND (document.expiry_date IS NOT NULL OR EXISTS (
+                SELECT 1 FROM {TABLE_POLICY_DOCUMENT_RELATIONS} AS relation
+                WHERE relation.target_policy_id = document.policy_id AND relation.review_status = 'approved'))''')
+        storage.relational.execute(f'''UPDATE {TABLE_POLICY_DOCUMENTS} AS document
+            SET validity_status = 'current', updated_at = NOW()
+            WHERE document.structure_status = 'succeeded' AND document.validity_status = 'unknown'
+              AND NOT EXISTS (SELECT 1 FROM {TABLE_POLICY_REVIEWS} AS review
+                WHERE review.policy_id = document.policy_id AND review.status = 'pending'
+                  AND review.issue_type IN ('effective_date_conflict', 'validity_conflict', 'version_conflict'))''')
 
 
 def _parse_date(value: Any) -> Optional[str]:
@@ -439,45 +626,66 @@ def upsert_policy_document(
 ) -> str:
     """创建或更新制度文档记录，并默认保留 unknown 效力状态。"""
     ensure_policy_tables()
-    policy_id = _stable_policy_id(file_id)
-    title = str(metadata.get("title") or file_name.rsplit(".", 1)[0]).strip()
+    document_key = str(metadata.get("document_key") or "")
+    policy_id = _stable_policy_id(file_id if not document_key else f"{file_id}:{document_key}")
+    # 制度名称统一去除排版空白，原始文件名独立保存。
+    title = "".join(str(metadata.get("title") or file_name.rsplit(".", 1)[0]).split())
+    from metadata.document_number import display_document_number
+    doc_number_raw = str(metadata.get("doc_number_raw") or metadata.get("doc_number") or "")
     original_pdf_url = str(metadata.get("original_pdf_url") or f"pdf/{file_id}.pdf")
     storage.relational.execute(
         f'''INSERT INTO "{TABLE_POLICY_DOCUMENTS}"
-            (policy_id, file_id, file_name, title, doc_number, issuing_department,
+            (policy_id, file_id, file_name, title, notice_title, doc_number, doc_number_raw, issuing_department,
              issue_date, effective_date, expiry_date, validity_status, version,
-             original_pdf_url, parse_quality, structure_status, structure_version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (file_id) DO UPDATE SET
+             original_pdf_url, parse_quality, structure_status, structure_version,
+             document_key, source_page_start, source_page_end)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (file_id, document_key) DO UPDATE SET
                 file_name = EXCLUDED.file_name,
                 title = EXCLUDED.title,
+                notice_title = EXCLUDED.notice_title,
                 doc_number = EXCLUDED.doc_number,
+                doc_number_raw = EXCLUDED.doc_number_raw,
                 issuing_department = EXCLUDED.issuing_department,
                 issue_date = EXCLUDED.issue_date,
-                effective_date = COALESCE("{TABLE_POLICY_DOCUMENTS}".effective_date, EXCLUDED.effective_date),
-                expiry_date = COALESCE("{TABLE_POLICY_DOCUMENTS}".expiry_date, EXCLUDED.expiry_date),
+                effective_date = CASE WHEN EXCLUDED.source_page_start IS NOT NULL THEN EXCLUDED.effective_date
+                    ELSE COALESCE("{TABLE_POLICY_DOCUMENTS}".effective_date, EXCLUDED.effective_date) END,
+                expiry_date = CASE WHEN EXCLUDED.source_page_start IS NOT NULL THEN EXCLUDED.expiry_date
+                    ELSE COALESCE("{TABLE_POLICY_DOCUMENTS}".expiry_date, EXCLUDED.expiry_date) END,
+                validity_status = CASE WHEN "{TABLE_POLICY_DOCUMENTS}".validity_status = 'invalid'
+                    THEN 'invalid' WHEN EXISTS (SELECT 1 FROM {TABLE_POLICY_REVIEWS} AS review
+                        WHERE review.policy_id = "{TABLE_POLICY_DOCUMENTS}".policy_id AND review.status = 'pending'
+                          AND review.issue_type IN ('effective_date_conflict', 'validity_conflict', 'version_conflict'))
+                    THEN 'unknown' ELSE EXCLUDED.validity_status END,
                 version = EXCLUDED.version,
                 original_pdf_url = EXCLUDED.original_pdf_url,
                 parse_quality = EXCLUDED.parse_quality,
                 structure_status = EXCLUDED.structure_status,
                 structure_version = EXCLUDED.structure_version,
+                source_page_start = EXCLUDED.source_page_start,
+                source_page_end = EXCLUDED.source_page_end,
                 updated_at = NOW()''',
         (
             policy_id,
             file_id,
             file_name,
             title,
-            str(metadata.get("doc_number") or ""),
+            str(metadata.get("notice_title") or ""),
+            display_document_number(str(metadata.get("doc_number") or "")),
+            doc_number_raw,
             str(metadata.get("issuer") or metadata.get("issuing_department") or ""),
             _parse_date(metadata.get("issue_date")),
             _parse_date(metadata.get("effective_date")),
             _parse_date(metadata.get("expiry_date")),
-            PolicyValidityStatus.UNKNOWN.value,
+            PolicyValidityStatus.CURRENT.value,
             str(metadata.get("version") or ""),
             original_pdf_url,
             max(0.0, min(float(parse_quality), 1.0)),
             structure_status.value,
             structure_version,
+            document_key,
+            metadata.get("source_page_start"),
+            metadata.get("source_page_end"),
         ),
     )
     return policy_id
@@ -575,6 +783,13 @@ def replace_policy_clauses(
         '"policy_id" = %s',
         (policy_id,),
     )
+    try:
+        from policy.retrieval import invalidate_policy_clause_bm25_index
+    except ImportError:
+        # BM25 依赖缺失时不阻断条款结构化，正式部署应安装 requirements.txt 中的依赖。
+        pass
+    else:
+        invalidate_policy_clause_bm25_index()
     return len(clauses)
 
 
@@ -584,11 +799,18 @@ def get_policy_document(policy_id: str = "", file_id: str = "") -> Optional[dict
     if policy_id:
         where, params = '"policy_id" = %s', (policy_id,)
     elif file_id:
-        where, params = '"file_id" = %s', (file_id,)
+        where, params = '"file_id" = %s AND "document_key" = %s', (file_id, "")
     else:
         return None
     rows = storage.relational.query(TABLE_POLICY_DOCUMENTS, where, 1, params)
     return rows[0] if rows else None
+
+
+def get_policy_documents_for_file(file_id: str) -> list[dict[str, Any]]:
+    """读取同一源文件的全部制度，不能用单记录接口代替。"""
+    ensure_policy_tables()
+    return storage.relational.query(TABLE_POLICY_DOCUMENTS,
+        '"file_id" = %s ORDER BY source_page_start NULLS FIRST, document_key', 100000, (file_id,))
 
 
 def get_policy_documents_by_ids(policy_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -714,18 +936,19 @@ def get_policy_documents_for_batch(batch_id: str) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in get_batch_items(batch_id):
-        file_id = item.get("file_id")
+        file_id = item.get("reuse_file_id") or item.get("file_id")
         if not file_id or file_id in seen:
             continue
-        doc = get_policy_document(file_id=file_id)
-        if doc and doc.get("structure_status") == PolicyStructureStatus.SUCCEEDED.value:
-            documents.append(doc)
-            seen.add(file_id)
+        documents.extend(doc for doc in get_policy_documents_for_file(file_id)
+                         if doc.get("structure_status") == PolicyStructureStatus.SUCCEEDED.value)
+        seen.add(file_id)
     return documents
 
 
 def upsert_policy_document_relation(relation: PolicyDocumentRelation) -> str:
     """幂等保存废止候选，且绝不覆盖既有的人工审核结论。"""
+    if relation.target_policy_id and relation.target_policy_id == relation.source_policy_id:
+        raise ValueError("废止目标不能是来源制度自身")
     ensure_policy_tables()
     storage.relational.execute(
         f'''INSERT INTO "{TABLE_POLICY_DOCUMENT_RELATIONS}"
@@ -825,11 +1048,8 @@ def _normalize_document_title(value: str) -> str:
 
 def _normalize_document_number(value: str) -> str:
     """规范制度文号的括号和空白，用于等值比较。"""
-    text = "".join(str(value or "").split())
-    return text.translate(str.maketrans({
-        "（": "[", "〔": "[", "(": "[",
-        "）": "]", "〕": "]", ")": "]",
-    }))
+    from metadata.document_number import normalize_document_number
+    return normalize_document_number(value)
 
 
 def find_policy_documents_by_doc_number(doc_number: str) -> list[dict[str, Any]]:
@@ -919,8 +1139,17 @@ def review_policy_document_relation(
         if decision == PolicyReviewStatus.APPROVED.value:
             if not resolved_target_policy_id:
                 raise ValueError("批准废止关系必须指定目标制度")
-            if not lock_policy_document(str(resolved_target_policy_id)):
+            if str(resolved_target_policy_id) == str(relation.get("source_policy_id") or ""):
+                raise ValueError("废止目标不能是来源制度自身")
+            target_document = lock_policy_document(str(resolved_target_policy_id))
+            if not target_document:
                 raise ValueError(f"未找到目标制度: {resolved_target_policy_id}")
+            from policy.abolition import target_publication_year, document_publication_year
+            expected_year = target_publication_year(str(relation.get("evidence_text") or ""),
+                                                    str(relation.get("target_title") or ""))
+            actual_year = document_publication_year(target_document)
+            if expected_year is not None and actual_year is not None and expected_year != actual_year:
+                raise ValueError(f"目标制度发文年份 {actual_year} 与废止证据中的 {expected_year} 年不一致")
             if resolved_effective_date and find_policy_document_relation_date_conflict(
                 str(resolved_target_policy_id), resolved_effective_date, relation_id
             ):
@@ -1163,6 +1392,167 @@ def create_policy_process_run(
             (f"policy_process_item_{uuid.uuid4().hex}", run_id, clause["clause_id"], "pending"),
         )
     return run_id
+
+
+def create_policy_classification_run(
+    batch_id: str,
+    versions: ProcessingVersion,
+    prompt_version: str,
+    rule_version: str,
+    schema_version: str,
+) -> str:
+    """为批次中的条、款、项创建独立分类运行。"""
+    from policy.classification_runner import select_classifiable_clauses
+
+    ensure_policy_tables()
+    run_id = f"classification_run_{uuid.uuid4().hex}"
+    documents = get_policy_documents_for_batch(batch_id)
+    clauses: list[dict[str, Any]] = []
+    for document in documents:
+        clauses.extend(get_policy_clauses(str(document["policy_id"])))
+    selected = select_classifiable_clauses(clauses)
+    storage.relational.execute(
+        f'''INSERT INTO "{TABLE_POLICY_CLASSIFICATION_RUNS}"
+            (run_id, batch_id, status, parser_version, embedding_model, llm_model,
+             pipeline_version, prompt_version, rule_version, schema_version, total_count)
+            VALUES (%s, %s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s)''',
+        (
+            run_id, batch_id, versions.parser_version, versions.embedding_model,
+            versions.llm_model, versions.pipeline_version, prompt_version,
+            rule_version, schema_version, len(selected),
+        ),
+    )
+    for clause in selected:
+        storage.relational.execute(
+            f'''INSERT INTO "{TABLE_POLICY_CLASSIFICATION_ITEMS}"
+                (item_id, run_id, clause_id, status)
+                VALUES (%s, %s, %s, 'pending')
+                ON CONFLICT (run_id, clause_id) DO NOTHING''',
+            (f"classification_item_{uuid.uuid4().hex}", run_id, clause["clause_id"]),
+        )
+    return run_id
+
+
+def get_policy_classification_run(run_id: str) -> Optional[dict[str, Any]]:
+    ensure_policy_tables()
+    rows = storage.relational.query(TABLE_POLICY_CLASSIFICATION_RUNS, '"run_id" = %s', 1, (run_id,))
+    return rows[0] if rows else None
+
+
+def get_policy_classification_items(run_id: str) -> list[dict[str, Any]]:
+    ensure_policy_tables()
+    return storage.relational.query(
+        TABLE_POLICY_CLASSIFICATION_ITEMS, '"run_id" = %s ORDER BY item_id', 100000, (run_id,)
+    )
+
+
+def update_policy_classification_run(run_id: str, values: dict[str, Any]) -> None:
+    ensure_policy_tables()
+    storage.relational.update_rows(TABLE_POLICY_CLASSIFICATION_RUNS, values, '"run_id" = %s', (run_id,))
+
+
+def update_policy_classification_item(item_id: str, values: dict[str, Any]) -> None:
+    ensure_policy_tables()
+    storage.relational.update_rows(TABLE_POLICY_CLASSIFICATION_ITEMS, values, '"item_id" = %s', (item_id,))
+
+
+def upsert_policy_classification_result(result: dict[str, Any]) -> None:
+    """保存系统分类结果；重跑任务时不覆盖已有人工复核。"""
+    ensure_policy_tables()
+    storage.relational.execute(
+        f'''INSERT INTO "{TABLE_POLICY_CLASSIFICATION_RESULTS}"
+            (result_id, run_id, clause_id, labels, evidence, reason, confidence, source)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+            ON CONFLICT (run_id, clause_id) DO UPDATE SET
+                labels = EXCLUDED.labels,
+                evidence = EXCLUDED.evidence,
+                reason = EXCLUDED.reason,
+                confidence = EXCLUDED.confidence,
+                source = EXCLUDED.source,
+                updated_at = NOW()''',
+        (
+            str(result.get("result_id") or f"classification_result_{uuid.uuid4().hex}"),
+            result["run_id"], result["clause_id"],
+            json.dumps(result["labels"], ensure_ascii=False),
+            json.dumps(result["evidence"], ensure_ascii=False),
+            str(result.get("reason") or ""), float(result.get("confidence") or 0),
+            str(result.get("source") or ""),
+        ),
+    )
+
+
+def get_policy_classification_results(run_id: str) -> list[dict[str, Any]]:
+    ensure_policy_tables()
+    return storage.relational.query(
+        TABLE_POLICY_CLASSIFICATION_RESULTS, '"run_id" = %s ORDER BY clause_id', 100000, (run_id,)
+    )
+
+
+def get_policy_classification_review_rows(run_id: str) -> list[dict[str, Any]]:
+    """读取分类结果并补齐制度和条款上下文。"""
+    rows: list[dict[str, Any]] = []
+    for result in get_policy_classification_results(run_id):
+        clause = get_policy_clause(str(result.get("clause_id") or ""))
+        if not clause:
+            continue
+        document = get_policy_document(policy_id=str(clause.get("policy_id") or "")) or {}
+        rows.append({**result, "clause": clause, "document": document})
+    return rows
+
+
+def review_policy_classification_result(
+    run_id: str,
+    clause_id: str,
+    reviewed_labels: list[str],
+    reviewer: str,
+    review_note: str,
+) -> None:
+    """幂等写入人工最终标签，同时保留系统分类字段。"""
+    ensure_policy_tables()
+    rows = storage.relational.query(
+        TABLE_POLICY_CLASSIFICATION_RESULTS,
+        '"run_id" = %s AND "clause_id" = %s', 1, (run_id, clause_id),
+    )
+    if not rows:
+        raise ValueError("分类运行与条款 ID 不匹配")
+    clause = get_policy_clause(clause_id)
+    if not clause:
+        raise ValueError("人工复核对应的条款不存在")
+    full_text = str(clause.get("raw_text") or clause.get("search_text") or "")
+    storage.relational.update_rows(
+        TABLE_POLICY_CLASSIFICATION_RESULTS,
+        {
+            "review_status": "approved",
+            "reviewed_labels": json.dumps(reviewed_labels, ensure_ascii=False),
+            "reviewed_evidence": json.dumps(
+                {label: full_text for label in reviewed_labels}, ensure_ascii=False
+            ),
+            "reviewer": reviewer,
+            "review_note": review_note,
+            "reviewed_at": datetime.now(),
+        },
+        '"run_id" = %s AND "clause_id" = %s',
+        (run_id, clause_id),
+    )
+
+
+def refresh_policy_classification_run(run_id: str) -> dict[str, Any]:
+    run = get_policy_classification_run(run_id)
+    if not run:
+        raise ValueError(f"分类运行不存在: {run_id}")
+    items = get_policy_classification_items(run_id)
+    succeeded = sum(item.get("status") == "succeeded" for item in items)
+    failed = sum(item.get("status") == "failed" for item in items)
+    unfinished = sum(item.get("status") not in {"succeeded", "failed"} for item in items)
+    values: dict[str, Any] = {
+        "status": "running" if unfinished else ("partial_failed" if failed else "succeeded"),
+        "succeeded_count": succeeded,
+        "failed_count": failed,
+    }
+    if not unfinished:
+        values["finished_at"] = datetime.now()
+    update_policy_classification_run(run_id, values)
+    return get_policy_classification_run(run_id) or {**run, **values}
 
 
 def get_policy_process_run(run_id: str) -> Optional[dict[str, Any]]:
@@ -1700,3 +2090,305 @@ def mark_extraction_run_current(run_id: str, batch_id: str) -> None:
             )''',
         (run_id, batch_id),
     )
+
+
+# ============================================================
+# 制度知识抽取 V2
+# ============================================================
+
+def create_policy_knowledge_run_v2(
+    batch_id: str,
+    versions: ProcessingVersion,
+    prompt_version: str,
+    rule_version: str,
+    schema_version: str,
+    sample_path: str | None = None,
+    context_ancestor_depth: int = 1,
+) -> str:
+    """为批次中的全部实质性条款创建独立 V2 抽取运行。"""
+    from policy.knowledge_v2 import is_substantive_clause
+
+    ensure_policy_tables()
+    documents = get_policy_documents_for_batch(batch_id)
+    clauses = [
+        clause for document in documents
+        for clause in get_policy_clauses(str(document.get("policy_id") or ""))
+        if is_substantive_clause(clause)
+    ]
+    if sample_path:
+        from policy.knowledge_sampling_v2 import load_sample_ids
+
+        selected_ids = set(load_sample_ids(sample_path, batch_id, clauses))
+        clauses = [clause for clause in clauses if clause["clause_id"] in selected_ids]
+        schema_version += "-sample"
+    run_id = f"knowledge_v2_run_{uuid.uuid4().hex}"
+    storage.relational.execute(
+        f'''INSERT INTO "{TABLE_POLICY_KNOWLEDGE_RUNS_V2}"
+            (run_id, batch_id, parser_version, embedding_model, llm_model, pipeline_version,
+             prompt_version, rule_version, schema_version, context_ancestor_depth, total_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+        (run_id, batch_id, versions.parser_version, versions.embedding_model, versions.llm_model,
+         versions.pipeline_version, prompt_version, rule_version, schema_version, context_ancestor_depth, len(clauses)),
+    )
+    for clause in clauses:
+        storage.relational.execute(
+            f'''INSERT INTO "{TABLE_POLICY_KNOWLEDGE_ITEMS_V2}"
+                (item_id, run_id, clause_id) VALUES (%s, %s, %s)
+                ON CONFLICT (run_id, clause_id) DO NOTHING''',
+            (f"knowledge_v2_item_{uuid.uuid4().hex}", run_id, clause["clause_id"]),
+        )
+    return run_id
+
+
+def get_policy_knowledge_run_v2(run_id: str) -> Optional[dict[str, Any]]:
+    ensure_policy_tables()
+    rows = storage.relational.query(TABLE_POLICY_KNOWLEDGE_RUNS_V2, '"run_id" = %s', 1, (run_id,))
+    return rows[0] if rows else None
+
+
+def is_latest_successful_policy_knowledge_run_v2(run_id: str) -> bool:
+    """只有同批次最新成功运行可以发布到当前断言索引。"""
+    run = get_policy_knowledge_run_v2(run_id)
+    if not run:
+        return False
+    rows = storage.relational.query(
+        TABLE_POLICY_KNOWLEDGE_RUNS_V2,
+        '"batch_id" = %s AND "status" = %s AND schema_version NOT LIKE %s ORDER BY created_at DESC',
+        1,
+        (run["batch_id"], "succeeded", "%-sample"),
+    )
+    return bool(rows) and str(rows[0].get("run_id") or "") == run_id
+
+
+def get_policy_knowledge_items_v2(run_id: str) -> list[dict[str, Any]]:
+    ensure_policy_tables()
+    return storage.relational.query(
+        TABLE_POLICY_KNOWLEDGE_ITEMS_V2, '"run_id" = %s ORDER BY item_id', 100000, (run_id,)
+    )
+
+
+def update_policy_knowledge_run_v2(run_id: str, values: dict[str, Any]) -> None:
+    ensure_policy_tables()
+    storage.relational.update_rows(TABLE_POLICY_KNOWLEDGE_RUNS_V2, values, '"run_id" = %s', (run_id,))
+
+
+def update_policy_knowledge_item_v2(item_id: str, values: dict[str, Any]) -> None:
+    ensure_policy_tables()
+    storage.relational.update_rows(TABLE_POLICY_KNOWLEDGE_ITEMS_V2, values, '"item_id" = %s', (item_id,))
+
+
+def refresh_policy_knowledge_run_v2(run_id: str) -> dict[str, Any]:
+    run = get_policy_knowledge_run_v2(run_id)
+    if not run:
+        raise ValueError(f"V2 抽取运行不存在: {run_id}")
+    items = get_policy_knowledge_items_v2(run_id)
+    succeeded = sum(item.get("status") == "succeeded" for item in items)
+    failed = sum(item.get("status") == "failed" for item in items)
+    unfinished = sum(item.get("status") not in {"succeeded", "failed"} for item in items)
+    values: dict[str, Any] = {
+        "status": "running" if unfinished else ("partial_failed" if failed else "succeeded"),
+        "succeeded_count": succeeded,
+        "failed_count": failed,
+    }
+    if not unfinished:
+        values["finished_at"] = datetime.now()
+    update_policy_knowledge_run_v2(run_id, values)
+    return get_policy_knowledge_run_v2(run_id) or {**run, **values}
+
+
+def replace_policy_assertions_v2(
+    run_id: str, clause_id: str, valid: list[dict[str, Any]], invalid: list[dict[str, Any]]
+) -> None:
+    """幂等替换单条款机器结果；人工修正和拒绝结果不被重跑覆盖。"""
+    ensure_policy_tables()
+    clause = get_policy_clause(clause_id)
+    if not clause:
+        raise ValueError("V2 断言对应条款不存在")
+    storage.relational.execute(
+        f'''DELETE FROM "{TABLE_POLICY_ASSERTIONS_V2}"
+            WHERE run_id = %s AND clause_id = %s AND status IN ('machine_extracted', 'invalid')''',
+        (run_id, clause_id),
+    )
+    for item in [*valid, *invalid]:
+        payload = item.get("payload") if item.get("status") == "invalid" else item
+        payload = payload if isinstance(payload, dict) else {"value": payload}
+        if item.get("status") == "invalid":
+            payload = {**payload, "_validation_error": str(item.get("error") or "校验失败")}
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        subject = item.get("subject") if isinstance(item.get("subject"), dict) else {}
+        predicate = item.get("predicate") if isinstance(item.get("predicate"), dict) else {}
+        object_value = item.get("object") if isinstance(item.get("object"), dict) else {}
+        receiver = item.get("receiver") if isinstance(item.get("receiver"), dict) else {}
+        source_assertion_id = str(item.get("assertion_id") or f"assertion_invalid_{uuid.uuid4().hex}")
+        # 断言主键是全局主键，必须纳入运行 ID，才能支持同一事实的多次运行对比。
+        assertion_id = f"{run_id}_{source_assertion_id}"
+        payload = {**payload, "assertion_id": assertion_id}
+        storage.relational.execute(
+            f'''INSERT INTO "{TABLE_POLICY_ASSERTIONS_V2}"
+                (assertion_id, run_id, policy_id, clause_id, kind, modality,
+                 subject_text, predicate_text, object_text, receiver_text,
+                 evidence_text, evidence_start, evidence_end, payload, status, confidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)''',
+            (assertion_id, run_id, clause["policy_id"], clause_id, str(item.get("kind") or "invalid"),
+             str(item.get("modality") or "factual"), str(subject.get("text") or ""),
+             str(predicate.get("text") or ""), str(object_value.get("text") or ""),
+             str(receiver.get("text") or ""), str(evidence.get("text") or ""),
+             int(evidence.get("start") or 0), int(evidence.get("end") or 0),
+             json.dumps(payload, ensure_ascii=False), str(item.get("status") or "invalid"),
+             float(item.get("confidence") or 0)),
+        )
+
+
+def get_policy_assertions_v2(
+    run_id: str, *, policy_id: str | None = None, usable_only: bool = False
+) -> list[dict[str, Any]]:
+    ensure_policy_tables()
+    where = ['"run_id" = %s']
+    params: list[Any] = [run_id]
+    if policy_id:
+        where.append('"policy_id" = %s')
+        params.append(policy_id)
+    if usable_only:
+        where.append("status IN ('machine_extracted', 'approved', 'corrected')")
+    rows = storage.relational.query(
+        TABLE_POLICY_ASSERTIONS_V2, " AND ".join(where) + " ORDER BY clause_id, assertion_id", 100000, tuple(params)
+    )
+    for row in rows:
+        database_assertion_id = str(row.get("assertion_id") or "")
+        database_status = str(row.get("status") or "")
+        payload = row.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        if isinstance(payload, dict):
+            row.update(payload)
+            row["assertion_id"] = database_assertion_id or str(payload.get("assertion_id") or "")
+            row["status"] = database_status or str(payload.get("status") or "")
+            if database_status == "invalid" and payload.get("_validation_error"):
+                row["error"] = str(payload["_validation_error"])
+    return rows
+
+
+def get_policy_assertion_review_rows_v2(run_id: str) -> list[dict[str, Any]]:
+    """读取断言并补齐条款和制度信息，供 CSV 抽样复核。"""
+    rows: list[dict[str, Any]] = []
+    context_by_policy: dict[str, dict[str, dict[str, Any]]] = {}
+    for assertion in get_policy_assertions_v2(run_id):
+        clause = get_policy_clause(str(assertion.get("clause_id") or "")) or {}
+        if assertion.get("status") == "invalid" and not assertion.get("error"):
+            from policy.knowledge_v2 import validate_assertion
+
+            policy_id = str(clause.get("policy_id") or "")
+            if policy_id not in context_by_policy:
+                context_by_policy[policy_id] = {
+                    str(item.get("clause_id") or ""): item for item in get_policy_clauses(policy_id)
+                }
+            try:
+                original = assertion.get("payload")
+                validate_assertion(original if isinstance(original, dict) else assertion, context_by_policy[policy_id])
+            except (TypeError, ValueError) as exc:
+                assertion["error"] = str(exc)
+            else:
+                assertion["error"] = "历史结果未通过当时的校验；当前校验未复现具体原因"
+        document = get_policy_document(policy_id=str(clause.get("policy_id") or "")) or {}
+        rows.append({**assertion, "clause": clause, "document": document})
+    return rows
+
+
+def get_policy_assertion_v2(run_id: str, assertion_id: str) -> dict[str, Any] | None:
+    """读取并确认一条断言确实属于指定运行。"""
+    rows = get_policy_assertions_v2(run_id)
+    return next((row for row in rows if str(row.get("assertion_id") or "") == assertion_id), None)
+
+
+def review_policy_assertion_v2(
+    run_id: str,
+    assertion_id: str,
+    decision: str,
+    reviewer: str,
+    review_note: str = "",
+    corrected_payload: dict[str, Any] | None = None,
+) -> None:
+    """保存 V2 人工结论，并将候选切换到对应可用状态。"""
+    ensure_policy_tables()
+    if decision not in {"approved", "corrected", "rejected"}:
+        raise ValueError("人工结论必须是 approved、corrected 或 rejected")
+    rows = storage.relational.query(
+        TABLE_POLICY_ASSERTIONS_V2, '"run_id" = %s AND "assertion_id" = %s', 1, (run_id, assertion_id)
+    )
+    if not rows:
+        raise ValueError("V2 断言不存在或不属于该运行")
+    review_id = f"knowledge_v2_review_{uuid.uuid4().hex}"
+    storage.relational.execute(
+        f'''INSERT INTO "{TABLE_POLICY_ASSERTION_REVIEWS_V2}"
+            (review_id, run_id, assertion_id, clause_id, decision, corrected_payload, reviewer, review_note)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)''',
+        (review_id, run_id, assertion_id, rows[0]["clause_id"], decision,
+         json.dumps(corrected_payload, ensure_ascii=False) if corrected_payload else None,
+         reviewer, review_note),
+    )
+    values: dict[str, Any] = {"status": decision, "updated_at": datetime.now()}
+    if decision == "corrected" and corrected_payload:
+        subject = corrected_payload.get("subject") or {}
+        predicate = corrected_payload.get("predicate") or {}
+        object_value = corrected_payload.get("object") or {}
+        receiver = corrected_payload.get("receiver") or {}
+        evidence = corrected_payload.get("evidence") or {}
+        values.update({
+            "kind": corrected_payload.get("kind"),
+            "modality": corrected_payload.get("modality"),
+            "subject_text": subject.get("text") or "",
+            "predicate_text": predicate.get("text") or "",
+            "object_text": object_value.get("text") or "",
+            "receiver_text": receiver.get("text") or "",
+            "evidence_text": evidence.get("text") or "",
+            "evidence_start": int(evidence.get("start") or 0),
+            "evidence_end": int(evidence.get("end") or 0),
+            "payload": json.dumps(corrected_payload, ensure_ascii=False),
+        })
+    storage.relational.update_rows(
+        TABLE_POLICY_ASSERTIONS_V2, values, '"run_id" = %s AND "assertion_id" = %s', (run_id, assertion_id)
+    )
+
+
+def replace_policy_matters_v2(
+    run_id: str, policy_id: str, matters: list[dict[str, Any]]
+) -> None:
+    ensure_policy_tables()
+    storage.relational.execute(
+        f'''DELETE FROM "{TABLE_POLICY_MATTERS_V2}"
+            WHERE run_id = %s AND policy_id = %s AND review_status = 'machine_extracted' ''',
+        (run_id, policy_id),
+    )
+    for matter in matters:
+        storage.relational.execute(
+            f'''INSERT INTO "{TABLE_POLICY_MATTERS_V2}"
+                (matter_id, run_id, policy_id, container_clause_id, name, source, review_status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)''',
+            (matter["matter_id"], run_id, policy_id, matter["container_clause_id"], matter["name"],
+             matter.get("source", "explicit_structure"), matter.get("review_status", "machine_extracted")),
+        )
+        for sequence_no, member_clause_id in enumerate(matter.get("clause_ids") or []):
+            storage.relational.execute(
+                f'''INSERT INTO "{TABLE_POLICY_MATTER_MEMBERS_V2}"
+                    (matter_id, clause_id, sequence_no) VALUES (%s, %s, %s)''',
+                (matter["matter_id"], member_clause_id, sequence_no),
+            )
+
+
+def get_policy_matters_v2(run_id: str, policy_id: str | None = None) -> list[dict[str, Any]]:
+    ensure_policy_tables()
+    where, params = '"run_id" = %s', [run_id]
+    if policy_id:
+        where += ' AND "policy_id" = %s'
+        params.append(policy_id)
+    matters = storage.relational.query(TABLE_POLICY_MATTERS_V2, where + " ORDER BY name", 100000, tuple(params))
+    for matter in matters:
+        members = storage.relational.query(
+            TABLE_POLICY_MATTER_MEMBERS_V2,
+            '"matter_id" = %s ORDER BY sequence_no', 100000, (matter["matter_id"],),
+        )
+        matter["clause_ids"] = [str(item.get("clause_id") or "") for item in members]
+    return matters

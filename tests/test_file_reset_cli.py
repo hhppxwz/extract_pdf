@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import subprocess
 import sys
+import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from file_reset import reset_file_database_artifacts
+from file_reset import build_folder_reset_plan, reset_file_database_artifacts, reset_folder_database_artifacts
 
 
 class _ResetRelationalStorage:
@@ -40,6 +43,12 @@ class _ResetRelationalStorage:
         self.executed_sql.append(sql)
         if 'DELETE FROM "pdf_block_storage"' in sql:
             self.block_records_deleted = True
+
+    query_for_update = query
+
+    @contextmanager
+    def transaction(self):
+        yield
 
     def drop_table(self, table_name: str) -> None:
         self.dropped_tables.append(table_name)
@@ -144,6 +153,70 @@ class FileResetCliTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
         self.assertIn(b"--reset-file", completed.stdout)
+        self.assertIn(b"--reset-folder", completed.stdout)
+        self.assertIn(b"--confirm-reset-folder", completed.stdout)
+        self.assertIn(b"--allow-shared-reset", completed.stdout)
+        self.assertIn(b"--release-stale-reset", completed.stdout)
+
+    def test_folder_plan_finds_batch_and_hash_matches_without_leaking_outside(self) -> None:
+        """目录内批次记录和单文件导入均被找到，目录外记录标记为共享。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "policies"
+            folder.mkdir()
+            source = folder / "a.pdf"
+            source.write_bytes(b"policy")
+            outside = Path(temporary) / "other.pdf"
+            outside.write_bytes(b"other")
+            records = [
+                {"file_id": "pdf_a", "file_hash": hashlib.sha256(b"policy").hexdigest()},
+                {"file_id": "pdf_b", "file_hash": "other-hash"},
+            ]
+            items = [
+                {"file_id": "pdf_b", "file_path": str(folder / "moved.doc"), "status": "succeeded"},
+                {"file_id": "pdf_b", "file_path": str(outside), "status": "succeeded"},
+                {"file_id": "pdf_a", "file_path": str(source), "status": "succeeded"},
+            ]
+            plan = build_folder_reset_plan(folder, records, items)
+
+        self.assertEqual(plan["file_ids"], ["pdf_a", "pdf_b"])
+        self.assertEqual(plan["shared_file_ids"], ["pdf_b"])
+        self.assertEqual(plan["source_file_count"], 1)
+
+    def test_folder_reset_requires_confirmation_and_blocks_shared_or_running(self) -> None:
+        """预览无副作用，共享文件及运行中的文件不能批量清理。"""
+        plan = {"file_ids": ["pdf_a"], "shared_file_ids": [], "running_file_ids": []}
+        with patch("file_reset.storage", _ResetStorage()), patch("file_reset.load_folder_reset_plan", return_value=plan), patch(
+            "file_reset.reset_file_database_artifacts"
+        ) as resetter:
+            self.assertEqual(reset_folder_database_artifacts("folder", confirm=False), plan)
+            resetter.assert_not_called()
+            reset_folder_database_artifacts("folder", confirm=True)
+            resetter.assert_called_once_with("pdf_a")
+
+        for key in ("shared_file_ids", "running_file_ids"):
+            blocked = {**plan, key: ["pdf_a"]}
+            with patch("file_reset.load_folder_reset_plan", return_value=blocked), patch(
+                "file_reset.reset_file_database_artifacts"
+            ) as resetter:
+                with self.assertRaises(ValueError):
+                    reset_folder_database_artifacts("folder", confirm=True)
+                resetter.assert_not_called()
+
+    def test_folder_plan_ignores_office_lock_files_and_their_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "sample"
+            folder.mkdir()
+            (folder / "~$制度.doc").write_bytes(b"lock")
+            (folder / "制度.doc").write_bytes(b"policy")
+            records = [
+                {"file_id": "pdf_lock", "file_name": "~$制度.doc", "file_hash": hashlib.sha256(b"lock").hexdigest(), "status": "processing"},
+                {"file_id": "pdf_real", "file_name": "制度.doc", "file_hash": hashlib.sha256(b"policy").hexdigest()},
+            ]
+            items = [{"file_id": "pdf_lock", "file_path": str(folder / "~$制度.doc"), "status": "running"}]
+            plan = build_folder_reset_plan(folder, records, items)
+        self.assertEqual(plan["file_ids"], ["pdf_real"])
+        self.assertEqual(plan["source_file_count"], 1)
+        self.assertEqual(plan["running_file_ids"], [])
 
     def test_reset_file_rejects_unsafe_file_id(self) -> None:
         """防止文件 ID 被拼入动态表名时形成 SQL 注入入口。"""
@@ -175,6 +248,15 @@ class FileResetCliTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("文件 ID 格式非法", completed.stderr.decode("utf-8", "replace"))
 
+        # 共享覆盖参数不能脱离目录入口单独使用，更不能意外连接数据库。
+        for option in ("--allow-shared-reset", "--release-stale-reset"):
+            completed = subprocess.run(
+                [sys.executable, "main.py", option],
+                cwd=project_root, env=environment, capture_output=True, check=False,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("只能与 --reset-folder", completed.stderr.decode("utf-8", "replace"))
+
     def test_reset_file_removes_database_artifacts_before_requeueing(self) -> None:
         """防止重跑只改状态却保留旧向量、表格和溯源记录。"""
         fake_storage = _ResetStorage()
@@ -193,7 +275,9 @@ class FileResetCliTests(unittest.TestCase):
         self.assertEqual(fake_storage.relational.dropped_tables, ["pdf_pdf_123_tbl_sales"])
         self.assertEqual(fake_storage.vector.deleted, [
             ("pdf_pdf_123_text", "file_id", "pdf_123"),
+            ("policy_clause_search", "policy_id", "policy_1"),
             ("policy_clause_vectors", "policy_id", "policy_1"),
+            ("policy_assertion_search_v2", "policy_id", "policy_1"),
         ])
         self.assertIn(
             ("pdf_files", {"status": "pending", "error_message": "", "last_attempt_at": None}, '"file_id" = %s', ("pdf_123",)),
@@ -220,6 +304,11 @@ class FileResetCliTests(unittest.TestCase):
             "policy_entities",
             "policy_relations",
             "policy_manual_annotations",
+            "policy_assertion_reviews_v2",
+            "policy_matter_members_v2",
+            "policy_matters_v2",
+            "policy_assertions_v2",
+            "policy_knowledge_items_v2",
         }
         deleted_before_clauses = {
             table

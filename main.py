@@ -46,8 +46,12 @@ def run_process(pdf_path: str, backend: str = None):
 
     print(f"{datetime.datetime.now()} 正在处理: {pdf_path}")
 
-    with fitz.open(pdf_path) as doc:
-        page_count = len(doc)
+    if Path(pdf_path).suffix.lower() == ".pdf":
+        with fitz.open(pdf_path) as doc:
+            page_count = len(doc)
+    else:
+        # Word 与网页归档没有可靠的 PDF 页数，解析器会按正文块处理。
+        page_count = 0
     print(f"共有: {page_count}页")
 
     abolition_prompt = prompt_abolition_relation_insertion()
@@ -76,6 +80,12 @@ def run_process(pdf_path: str, backend: str = None):
         print(f"  错误:")
         for e in result.errors:
             print(f"    - {e}")
+    if result.status.value in {"done", "succeeded"} and result.file_id:
+        from policy.clause_export import export_file_clause_structure
+        source = Path(pdf_path).resolve()
+        output_path = source.with_name(f"{source.stem}_条款重组结果.json")
+        exported_path = export_file_clause_structure(result.file_id, output_path)
+        print(f"已导出条款重组结果: {exported_path}")
 
 
 def _print_batch_summary(status: dict) -> None:
@@ -88,6 +98,14 @@ def _print_batch_summary(status: dict) -> None:
     print(f"跳过: {batch.get('skipped_count', 0)}")
     print(f"待重试: {batch.get('retryable_failed_count', 0)}")
     print(f"永久失败: {batch.get('permanent_failed_count', 0)}")
+    items = status.get("items", [])
+    waiting = [item for item in items if item.get("status") in {"pending", "retry_wait", "running"}
+               or (item.get("status") == "failed" and item.get("error_kind") == "transient")]
+    for item in waiting:
+        file_name = item.get("file_name") or item.get("file_path") or item.get("item_id") or "未知文件"
+        print(f"  {file_name}: {item.get('status')}，{item.get('last_error') or '尚未完成'}")
+    if waiting and not any(item.get("status") == "running" for item in waiting):
+        print(f"未完成文件不会在后台自动重试。续跑：python main.py --resume-batch {batch['batch_id']}")
 
 
 def run_process_dir(source_dir: str, backend: str = None) -> None:
@@ -134,7 +152,10 @@ def run_reset_file(file_id: str) -> None:
     """清理单个 PDF 的数据库自动产物，使其能够重新进入批处理。"""
     from file_reset import reset_file_database_artifacts
 
-    summary = reset_file_database_artifacts(file_id)
+    try:
+        summary = reset_file_database_artifacts(file_id)
+    except ValueError as error:
+        raise SystemExit(f"文件重置未执行：{error}") from None
     print(f"已重置文件自动产物: {file_id}")
     print(
         "已清理："
@@ -145,6 +166,48 @@ def run_reset_file(file_id: str) -> None:
         f"块溯源 {summary['block_records']}，"
         f"制度条款 {summary['policy_clauses']}"
     )
+
+
+def run_reset_folder(
+    folder: str, *, confirm: bool = False, allow_shared: bool = False, release_stale: bool = False,
+    purge: bool = False, force: bool = False,
+) -> None:
+    """预览或批量重置指定目录内已导入文件的数据库产物。"""
+    from file_reset import reset_folder_database_artifacts
+
+    try:
+        plan = reset_folder_database_artifacts(folder, confirm=confirm, allow_shared=allow_shared,
+                                               release_stale=release_stale, purge=purge, force=force)
+    except ValueError as error:
+        raise SystemExit(f"目录重置未执行：{error}") from None
+    print(f"目标目录: {plan['folder']}")
+    print(f"当前源文件: {plan['source_file_count']}，匹配已导入文件 ID: {len(plan['file_ids'])}")
+    for file_id in plan["file_ids"]:
+        print(f"  {file_id}")
+    if plan["shared_file_ids"]:
+        print(f"目录外批次共用文件 ID: {', '.join(plan['shared_file_ids'])}")
+    if plan["running_file_ids"]:
+        print(f"处理占用或遗留占用的文件 ID: {', '.join(plan['running_file_ids'])}")
+    if plan.get("stale_file_ids"):
+        print(f"已过期的占用 ID（需确认旧进程已退出）: {', '.join(plan['stale_file_ids'])}")
+    if plan.get("released_stale_file_ids"):
+        print(f"已释放过期占用: {', '.join(plan['released_stale_file_ids'])}")
+    if plan.get("released_stale_policy_run_ids"):
+        print(f"已释放过期条款运行: {', '.join(sorted(set(plan['released_stale_policy_run_ids'])))}")
+    if purge:
+        print("彻底清理模式：同时清除旧制度元数据、入向与出向废止关系、无剩余任务的运行记录；保留源文件与稳定 ID。")
+    if plan.get("force", force or purge):
+        print("强制重置模式：忽略文件及条款任务状态和时间，不会终止操作系统进程；关联共享条款运行将中止。")
+    print(f"清理来源废止关系: {plan.get('abolition_relation_count', 0)} 条")
+    if plan.get("affected_policy_ids"):
+        print(f"需重算效力的目标制度: {', '.join(plan['affected_policy_ids'])}")
+    if confirm:
+        print(f"已重置 {len(plan['reset_file_ids'])} 个文件的数据库产物；原始文件未删除。")
+    else:
+        print("以上仅为预览，未修改数据库。重置会清除对应条款、向量及人工复核记录。")
+        print("确认执行请追加 --confirm-reset-folder；允许共享结果同步失效请追加 --allow-shared-reset。")
+        if not plan.get("force", force or purge):
+            print("常规重置可追加 --release-stale-reset 释放过期占用；--purge-imported-data 会强制清除旧入库数据，不受任务状态限制。")
 
 
 def _print_policy_extraction_summary(status: dict) -> None:
@@ -167,6 +230,53 @@ def run_extract_policy_batch(batch_id: str, limit: int | None = None) -> None:
         create_and_run_policy_extraction(batch_id, limit=limit)
     )
     print(f"{datetime.datetime.now()} 结束抽取")
+
+
+def _print_policy_knowledge_v2_summary(run: dict) -> None:
+    print(f"\nV2 抽取运行 ID: {run.get('run_id', '')}")
+    print(f"状态: {run.get('status', '')}")
+    print(f"总条款数: {run.get('total_count', 0)}")
+    print(f"成功: {run.get('succeeded_count', 0)}")
+    print(f"失败: {run.get('failed_count', 0)}")
+
+
+def run_extract_policy_knowledge_v2(batch_id: str, sample_path: str | None = None) -> None:
+    from policy.knowledge_runner_v2 import create_and_run_knowledge_extraction_v2
+
+    _print_policy_knowledge_v2_summary(create_and_run_knowledge_extraction_v2(batch_id, sample_path=sample_path))
+
+
+def run_resume_policy_knowledge_v2(run_id: str) -> None:
+    from policy.knowledge_runner_v2 import run_knowledge_extraction_v2
+
+    _print_policy_knowledge_v2_summary(run_knowledge_extraction_v2(run_id, resume=True))
+
+
+def run_policy_knowledge_v2_status(run_id: str) -> None:
+    from policy.storage import get_policy_knowledge_run_v2
+
+    run = get_policy_knowledge_run_v2(run_id)
+    if not run:
+        raise ValueError(f"V2 抽取运行不存在: {run_id}")
+    _print_policy_knowledge_v2_summary(run)
+
+
+def run_export_policy_knowledge_v2_review(run_id: str, output_path: str) -> None:
+    from policy.knowledge_review_v2 import export_assertion_review_v2
+
+    print(f"已导出 V2 断言复核表：{export_assertion_review_v2(run_id, output_path)}")
+
+
+def run_import_policy_knowledge_v2_review(csv_path: str, reviewer: str) -> None:
+    from policy.knowledge_review_v2 import import_assertion_review_v2
+
+    print(f"已导入 V2 复核结果：{import_assertion_review_v2(csv_path, reviewer)}")
+
+
+def run_export_policy_knowledge_v2_view(run_id: str, output_path: str) -> None:
+    from policy.knowledge_review_v2 import export_knowledge_view_v2
+
+    print(f"已导出 V2 事项与流程视图：{export_knowledge_view_v2(run_id, output_path)}")
 
 
 def run_resume_policy_extraction(run_id: str) -> None:
@@ -346,6 +456,44 @@ def run_policy_process_status(run_id: str) -> None:
     _print_policy_process_summary(get_policy_process_status(run_id))
 
 
+def _print_policy_classification_summary(status: dict) -> None:
+    """打印条款规范类型分类统计。"""
+    run = status.get("run", status)
+    print(f"\n条款分类运行 ID: {run['run_id']}")
+    print(f"运行状态: {run.get('status')}")
+    print(f"总条款数: {run.get('total_count', 0)}")
+    print(f"成功: {run.get('succeeded_count', 0)}")
+    print(f"失败: {run.get('failed_count', 0)}")
+
+
+def run_classify_policy_clauses(batch_id: str) -> None:
+    from policy.classification_runner import create_and_run_policy_clause_classification
+    _print_policy_classification_summary(create_and_run_policy_clause_classification(batch_id))
+
+
+def run_resume_policy_clause_classification(run_id: str) -> None:
+    from policy.classification_runner import run_policy_clause_classification
+    _print_policy_classification_summary(run_policy_clause_classification(run_id, resume=True))
+
+
+def run_policy_clause_classification_status(run_id: str) -> None:
+    from policy.classification_runner import get_policy_clause_classification_status
+    _print_policy_classification_summary(get_policy_clause_classification_status(run_id))
+
+
+def run_export_policy_classification_review(run_id: str, output_dir: str) -> None:
+    from policy.classification_review import export_classification_review
+    print(f"已导出条款分类复核表：{export_classification_review(run_id, output_dir)}")
+
+
+def run_import_policy_classification_review(csv_path: str, reviewer: str) -> None:
+    from policy.classification_review import import_classification_review
+    result = import_classification_review(csv_path, reviewer)
+    print(f"已导入 {result['reviewed_count']} 条人工复核结果")
+    print(f"多标签完全一致率: {result['exact_match_rate']:.2%}")
+    print(f"质量报告: {result['report_path']}")
+
+
 def run_extract_policy_process_run(process_run_id: str, limit: int | None = None) -> None:
     """只从流程判定运行中已确认的条款执行实体关系抽取。"""
     from policy.extraction import create_and_run_process_policy_extraction
@@ -452,6 +600,8 @@ if __name__ == '__main__':
     workflow_group = parser.add_argument_group("办事流程图谱（进阶）")
     recovery_group = parser.add_argument_group("状态、恢复与条款检索（进阶）")
     quality_group = parser.add_argument_group("抽检与质量报告（进阶）")
+    classification_group = parser.add_argument_group("条款义务、许可、禁止分类")
+    knowledge_v2_group = parser.add_argument_group("制度知识抽取 V2")
 
     pdf_group.add_argument(
         "--process",
@@ -484,6 +634,36 @@ if __name__ == '__main__':
         "--reset-file",
         type=str,
         help="删除指定文件的数据库自动产物并置为待处理，供重新解析使用",
+    )
+    recovery_group.add_argument(
+        "--reset-folder",
+        type=str,
+        help="预览指定目录（含子目录）中所有已导入文件的整体重置范围",
+    )
+    recovery_group.add_argument(
+        "--force-reset-folder",
+        action="store_true",
+        help="与 --reset-folder 配合，忽略文件和条款任务状态及时间强制重置；不会终止后台进程",
+    )
+    recovery_group.add_argument(
+        "--purge-imported-data",
+        action="store_true",
+        help="与 --reset-folder 配合，忽略任务状态强制清除旧制度元数据、所有相关废止关系及无剩余任务的运行记录；保留原始文件和稳定 ID",
+    )
+    recovery_group.add_argument(
+        "--release-stale-reset",
+        action="store_true",
+        help="与 --reset-folder 配合，确认旧进程已退出后释放过期文件及条款任务；仍保护近期活动和无法核实过期的任务",
+    )
+    recovery_group.add_argument(
+        "--allow-shared-reset",
+        action="store_true",
+        help="与 --reset-folder 配合，允许清理其他目录批次共用的文件结果；仍禁止重置正在处理的文件",
+    )
+    recovery_group.add_argument(
+        "--confirm-reset-folder",
+        action="store_true",
+        help="与 --reset-folder 一起使用，确认清理该目录全部已导入文件的数据库产物",
     )
     entity_graph_group.add_argument(
         "--extract-policy-batch",
@@ -535,6 +715,26 @@ if __name__ == '__main__':
         type=str,
         help="查看指定批次的制度废止关系审核状态",
     )
+    knowledge_v2_group.add_argument(
+        "--extract-policy-knowledge-v2", type=str,
+        help="为指定已结构化批次创建并执行制度断言与明确结构事项抽取",
+    )
+    knowledge_v2_group.add_argument(
+        "--resume-policy-knowledge-v2", type=str,
+        help="恢复指定 V2 知识抽取运行中的失败条款",
+    )
+    knowledge_v2_group.add_argument(
+        "--policy-knowledge-v2-status", type=str,
+        help="查看指定 V2 知识抽取运行状态",
+    )
+    knowledge_v2_group.add_argument("--export-policy-knowledge-v2-review", type=str, help="导出指定 V2 运行的断言复核 CSV")
+    knowledge_v2_group.add_argument("--import-policy-knowledge-v2-review", type=str, help="导入 V2 断言复核 CSV")
+    knowledge_v2_group.add_argument("--knowledge-v2-reviewer", type=str, help="导入 V2 复核表时使用的审核人")
+    knowledge_v2_group.add_argument("--export-policy-knowledge-v2-view", type=str, help="导出指定 V2 运行的事项与流程视图 JSON")
+    knowledge_v2_group.add_argument("--knowledge-v2-output", type=str, help="V2 复核 CSV 或事项流程 JSON 输出路径")
+    knowledge_v2_group.add_argument("--sample-policy-knowledge-v2", type=str, help="为批次导出代表性条款清单，不调用模型")
+    knowledge_v2_group.add_argument("--knowledge-v2-sample-count", type=int, default=20, help="样本条款数，默认20")
+    knowledge_v2_group.add_argument("--knowledge-v2-sample-file", type=str, help="只抽取指定清单中选用的条款")
     recovery_group.add_argument("--backfill-policy-governance", type=str, help="回填指定批次的制度生效日期并生成归族候选")
     recovery_group.add_argument("--policy-governance-status", type=str, help="查看指定批次的制度版本治理状态")
     entity_graph_group.add_argument("--review-policy-families", type=str, help="审核指定批次的制度族候选")
@@ -571,6 +771,21 @@ if __name__ == '__main__':
         "--classify-policy-process-batch",
         type=str,
         help="为指定 PDF 批次创建并执行流程条款分流",
+    )
+    classification_group.add_argument(
+        "--classify-policy-clauses",
+        type=str,
+        help="为指定已结构化批次创建并执行条款义务、许可、禁止分类",
+    )
+    classification_group.add_argument(
+        "--resume-policy-clause-classification",
+        type=str,
+        help="恢复指定条款分类运行中的失败任务",
+    )
+    classification_group.add_argument(
+        "--policy-clause-classification-status",
+        type=str,
+        help="查看指定条款分类运行状态",
     )
     workflow_group.add_argument(
         "--policy-domains",
@@ -627,6 +842,21 @@ if __name__ == '__main__':
         type=str,
         help="读取指定目录中回填的抽检 CSV，生成质量报告"
     )
+    classification_group.add_argument(
+        "--export-policy-classification-review",
+        type=str,
+        help="导出指定条款分类运行的人工复核 CSV",
+    )
+    classification_group.add_argument(
+        "--import-policy-classification-review",
+        type=str,
+        help="导入人工回填的条款分类复核 CSV",
+    )
+    classification_group.add_argument(
+        "--classification-reviewer",
+        type=str,
+        help="条款分类 CSV 导入审核人；只可与导入命令一起使用",
+    )
     quality_group.add_argument(
         "--quality-output",
         type=str,
@@ -646,13 +876,24 @@ if __name__ == '__main__':
         raise SystemExit(0)
 
     selected_modes = [
+        bool(args.sample_policy_knowledge_v2),
         bool(args.process),
         bool(args.process_dir),
         bool(args.resume_batch),
         bool(args.batch_status),
         bool(args.reset_file),
+        bool(args.reset_folder),
         bool(args.extract_policy_batch),
+        bool(args.extract_policy_knowledge_v2),
+        bool(args.resume_policy_knowledge_v2),
+        bool(args.policy_knowledge_v2_status),
+        bool(args.export_policy_knowledge_v2_review),
+        bool(args.import_policy_knowledge_v2_review),
+        bool(args.export_policy_knowledge_v2_view),
         bool(args.classify_policy_process_batch),
+        bool(args.classify_policy_clauses),
+        bool(args.resume_policy_clause_classification),
+        bool(args.policy_clause_classification_status),
         bool(args.resume_policy_process),
         bool(args.policy_process_status),
         bool(args.extract_policy_process_run),
@@ -674,6 +915,8 @@ if __name__ == '__main__':
         bool(args.export_policy_process_graph_review),
         bool(args.export_policy_workflow_graph),
         bool(args.report_policy_quality),
+        bool(args.export_policy_classification_review),
+        bool(args.import_policy_classification_review),
     ]
     if sum(selected_modes) > 1:
         parser.error("处理、批次和制度抽取参数只能选择一个")
@@ -682,10 +925,32 @@ if __name__ == '__main__':
 
         if not is_valid_file_id(args.reset_file):
             parser.error("文件 ID 格式非法")
+    if args.confirm_reset_folder and not args.reset_folder:
+        parser.error("--confirm-reset-folder 只能与 --reset-folder 一起使用")
+    if args.allow_shared_reset and not args.reset_folder:
+        parser.error("--allow-shared-reset 只能与 --reset-folder 一起使用")
+    if args.release_stale_reset and not args.reset_folder:
+        parser.error("--release-stale-reset 只能与 --reset-folder 一起使用")
+    if args.purge_imported_data and not args.reset_folder:
+        parser.error("--purge-imported-data 只能与 --reset-folder 一起使用")
+    if args.force_reset_folder and not args.reset_folder:
+        parser.error("--force-reset-folder 只能与 --reset-folder 一起使用")
     if args.limit is not None and not (args.extract_policy_batch or args.extract_policy_process_run):
         parser.error("--limit 只能与制度实体关系抽取参数一起使用")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit 必须大于等于 1")
+    if args.knowledge_v2_reviewer and not args.import_policy_knowledge_v2_review:
+        parser.error("--knowledge-v2-reviewer 只能与 V2 复核导入一起使用")
+    if args.import_policy_knowledge_v2_review and not str(args.knowledge_v2_reviewer or "").strip():
+        parser.error("导入 V2 复核表必须提供 --knowledge-v2-reviewer")
+    if (args.export_policy_knowledge_v2_review or args.export_policy_knowledge_v2_view) and not args.knowledge_v2_output:
+        parser.error("导出 V2 产物必须提供 --knowledge-v2-output")
+    if args.sample_policy_knowledge_v2 and (not args.knowledge_v2_output or args.knowledge_v2_sample_count < 1):
+        parser.error("生成样本需要输出路径和正数样本数量")
+    if args.knowledge_v2_sample_file and not args.extract_policy_knowledge_v2:
+        parser.error("样本清单只能与 V2 抽取命令一起使用")
+    if args.knowledge_v2_output and not (args.export_policy_knowledge_v2_review or args.export_policy_knowledge_v2_view or args.sample_policy_knowledge_v2):
+        parser.error("--knowledge-v2-output 只能与 V2 导出命令一起使用")
     if args.policy_domains is not None and not args.classify_policy_process_batch:
         parser.error("--policy-domains 只能与 --classify-policy-process-batch 一起使用")
     selected_domains = None
@@ -720,6 +985,10 @@ if __name__ == '__main__':
         parser.error("--family-review-limit 只能与 --review-policy-families 一起使用")
     if args.review_limit < 1:
         parser.error("--review-limit 必须大于等于 1")
+    if args.classification_reviewer and not args.import_policy_classification_review:
+        parser.error("--classification-reviewer 只能与 --import-policy-classification-review 一起使用")
+    if args.import_policy_classification_review and not str(args.classification_reviewer or "").strip():
+        parser.error("--import-policy-classification-review 必须提供 --classification-reviewer")
     if args.clauses_per_policy < 1:
         parser.error("--clauses-per-policy 必须大于等于 1")
     if args.quality_output and not (
@@ -727,6 +996,7 @@ if __name__ == '__main__':
         or args.export_policy_graph_review
         or args.export_policy_process_review
         or args.export_policy_process_graph_review
+        or args.export_policy_classification_review
     ):
         parser.error("--quality-output 只能与质检表导出参数一起使用")
     if args.clauses_per_policy != 10 and not args.export_policy_clause_review:
@@ -736,6 +1006,7 @@ if __name__ == '__main__':
         or args.export_policy_graph_review
         or args.export_policy_process_review
         or args.export_policy_process_graph_review
+        or args.export_policy_classification_review
     ) and not args.quality_output:
         parser.error("导出质检表必须提供 --quality-output")
 
@@ -743,17 +1014,43 @@ if __name__ == '__main__':
         run_process_dir(args.process_dir, backend=args.backend)
     elif args.reset_file:
         run_reset_file(args.reset_file)
+    elif args.reset_folder:
+        run_reset_folder(args.reset_folder, confirm=args.confirm_reset_folder, allow_shared=args.allow_shared_reset,
+                         release_stale=args.release_stale_reset, purge=args.purge_imported_data,
+                         force=args.force_reset_folder)
     elif args.resume_batch:
         run_resume_batch(args.resume_batch)
     elif args.batch_status:
         run_batch_status(args.batch_status)
     elif args.extract_policy_batch:
         run_extract_policy_batch(args.extract_policy_batch, limit=args.limit)
+    elif args.extract_policy_knowledge_v2:
+        run_extract_policy_knowledge_v2(args.extract_policy_knowledge_v2, args.knowledge_v2_sample_file)
+    elif args.sample_policy_knowledge_v2:
+        from policy.knowledge_sampling_v2 import export_samples
+
+        print(export_samples(args.sample_policy_knowledge_v2, args.knowledge_v2_output, args.knowledge_v2_sample_count))
+    elif args.resume_policy_knowledge_v2:
+        run_resume_policy_knowledge_v2(args.resume_policy_knowledge_v2)
+    elif args.policy_knowledge_v2_status:
+        run_policy_knowledge_v2_status(args.policy_knowledge_v2_status)
+    elif args.export_policy_knowledge_v2_review:
+        run_export_policy_knowledge_v2_review(args.export_policy_knowledge_v2_review, args.knowledge_v2_output)
+    elif args.import_policy_knowledge_v2_review:
+        run_import_policy_knowledge_v2_review(args.import_policy_knowledge_v2_review, args.knowledge_v2_reviewer)
+    elif args.export_policy_knowledge_v2_view:
+        run_export_policy_knowledge_v2_view(args.export_policy_knowledge_v2_view, args.knowledge_v2_output)
     elif args.classify_policy_process_batch:
         run_classify_policy_process_batch(
             args.classify_policy_process_batch,
             selected_domains=selected_domains,
         )
+    elif args.classify_policy_clauses:
+        run_classify_policy_clauses(args.classify_policy_clauses)
+    elif args.resume_policy_clause_classification:
+        run_resume_policy_clause_classification(args.resume_policy_clause_classification)
+    elif args.policy_clause_classification_status:
+        run_policy_clause_classification_status(args.policy_clause_classification_status)
     elif args.resume_policy_process:
         run_resume_policy_process(args.resume_policy_process)
     elif args.policy_process_status:
@@ -808,6 +1105,16 @@ if __name__ == '__main__':
         run_export_policy_process_graph_review(
             args.export_policy_process_graph_review,
             args.quality_output,
+        )
+    elif args.export_policy_classification_review:
+        run_export_policy_classification_review(
+            args.export_policy_classification_review,
+            args.quality_output,
+        )
+    elif args.import_policy_classification_review:
+        run_import_policy_classification_review(
+            args.import_policy_classification_review,
+            args.classification_reviewer,
         )
     elif args.export_policy_workflow_graph:
         run_export_policy_workflow_graph(

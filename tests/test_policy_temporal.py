@@ -15,6 +15,32 @@ from policy.temporal import (
 
 
 class PolicyTemporalTests(unittest.TestCase):
+    def test_default_current_does_not_require_effective_date(self):
+        self.assertEqual(classify_temporal_status({'validity_status': 'current'}, '2026-09-28'), 'applicable')
+
+    def test_confirmed_invalid_without_date_is_not_currently_applicable(self):
+        from datetime import date
+        self.assertEqual(classify_temporal_status({'validity_status': 'invalid'}, date.today().isoformat()), 'inapplicable')
+        self.assertEqual(classify_temporal_status({'validity_status': 'invalid'}, '2000-01-01'), 'unknown')
+
+    def test_future_abolition_keeps_previous_period_applicable(self):
+        document = {'validity_status': 'invalid', 'expiry_date': '2030-01-01'}
+        self.assertEqual(classify_temporal_status(document, '2026-09-28'), 'applicable')
+        self.assertEqual(classify_temporal_status(document, '2030-01-01'), 'inapplicable')
+
+    def test_explicit_review_state_is_not_assumed_current(self):
+        self.assertEqual(classify_temporal_status({'validity_status': 'unknown'}, '2026-09-28'), 'unknown')
+        self.assertEqual(classify_temporal_status({'validity_status': 'unknown', 'effective_date': '2020-01-01'}, '2026-09-28'), 'unknown')
+
+    @patch('policy.governance.insert_review_item')
+    @patch('policy.governance.storage.relational.update_rows')
+    def test_date_conflict_requires_review_without_restoring_invalid(self, update, review):
+        result = apply_effective_date_governance('policy_1',
+            ['自2020年1月1日起施行。', '自2021年1月1日起执行。'], None)
+        self.assertEqual(result['status'], 'conflict')
+        self.assertEqual(update.call_args.args[1], {'validity_status': 'unknown'})
+        self.assertEqual(update.call_args.args[3], ('policy_1', 'invalid'))
+        review.assert_called_once()
     @patch("policy.governance.insert_review_item")
     @patch("policy.governance.storage.relational.update_rows")
     def test_new_document_effective_date_is_saved(self, update_rows, insert_review) -> None:
@@ -60,7 +86,7 @@ class PolicyTemporalTests(unittest.TestCase):
         self.assertEqual(classify_temporal_status(document, "2016-01-01"), "applicable")
         self.assertEqual(classify_temporal_status(document, "2022-10-01"), "inapplicable")
 
-    def test_unknown_dates_rank_after_applicable_documents(self) -> None:
+    def test_relevant_unknown_dates_survive_candidate_limit(self) -> None:
         candidates = [
             {"metadata": {"policy_id": "unknown"}, "score": 0.99},
             {"metadata": {"policy_id": "known"}, "score": 0.50},
@@ -69,9 +95,9 @@ class PolicyTemporalTests(unittest.TestCase):
             "unknown": {"policy_id": "unknown", "effective_date": None, "expiry_date": None},
             "known": {"policy_id": "known", "effective_date": "2020-01-01", "expiry_date": None},
         }
-        ranked, warnings = rank_temporal_candidates(candidates, documents, "2021-01-01", 10)
-        self.assertEqual([item["metadata"]["policy_id"] for item in ranked], ["known", "unknown"])
-        self.assertEqual(ranked[1]["temporal_status"], "unknown")
+        ranked, warnings = rank_temporal_candidates(candidates, documents, "2021-01-01", 1)
+        self.assertEqual([item["metadata"]["policy_id"] for item in ranked], ["unknown"])
+        self.assertEqual(ranked[0]["temporal_status"], "unknown")
         self.assertEqual(warnings, [])
 
     def test_future_and_expired_versions_are_excluded(self) -> None:

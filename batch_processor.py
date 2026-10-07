@@ -58,13 +58,20 @@ def _sha256_file(file_path: Path) -> str:
     return digest.hexdigest()
 
 
-def _list_pdf_files(source_dir: Path) -> list[Path]:
-    """递归收集 PDF，按路径排序以保证批次顺序稳定。"""
+def _list_supported_files(source_dir: Path) -> list[Path]:
+    """递归收集 CloudMinerU 支持的 PDF 和 Word 文件。"""
     return sorted(
         (path.resolve() for path in source_dir.rglob("*")
-         if path.is_file() and path.suffix.lower() == ".pdf"),
+         if path.is_file()
+         and not path.name.startswith("~$")
+         and path.suffix.lower() in {".pdf", ".doc", ".docx"}),
         key=lambda path: str(path).lower(),
     )
+
+
+def _list_pdf_files(source_dir: Path) -> list[Path]:
+    """兼容旧调用名称，实际返回全部受支持文档。"""
+    return _list_supported_files(source_dir)
 
 
 def create_batch_job(
@@ -76,9 +83,9 @@ def create_batch_job(
     if not directory.is_dir():
         raise ValueError(f"批处理目录不存在: {directory}")
 
-    files = _list_pdf_files(directory)
+    files = _list_supported_files(directory)
     if not files:
-        raise ValueError(f"目录中没有 PDF 文件: {directory}")
+        raise ValueError(f"目录中没有 PDF、DOC 或 DOCX 文件: {directory}")
     if max_attempts < 1:
         raise ValueError("max_attempts 必须大于等于 1")
 
@@ -166,6 +173,10 @@ def _is_retryable_error(result: ProcessingResult) -> bool:
     transient_markers = (
         "timeout",
         "timed out",
+        "connecterror",
+        "connect error",
+        "connection refused",
+        "winerror 10013",
         "连接",
         "connection",
         "temporarily",
@@ -245,13 +256,29 @@ def _process_item(
         _mark_failed(item["item_id"], f"本地文件不存在: {file_path}", ErrorKind.PERMANENT)
         return
 
+    suffix = file_path.suffix.lower()
     try:
-        with fitz.open(str(file_path)) as document:
-            page_count = len(document)
+        if suffix == ".pdf":
+            with fitz.open(str(file_path)) as document:
+                page_count = len(document)
+        else:
+            # Word 页数由 CloudMinerU 解析，提交前无法可靠获得。
+            page_count = 0
         file_data = file_path.read_bytes()
     except Exception as exc:
-        _mark_failed(item["item_id"], f"PDF 文件无法读取: {exc}", ErrorKind.PERMANENT)
+        _mark_failed(item["item_id"], f"文档无法读取: {exc}", ErrorKind.PERMANENT)
         return
+
+    if suffix == ".doc" and app_config.parser.parser_backend != "cloudmineru":
+        from parsers.mhtml_doc import is_mhtml_document
+
+        if suffix != ".doc" or not is_mhtml_document(file_data):
+            _mark_failed(
+                item["item_id"],
+                "真正的 DOC 仅支持 cloudmineru 解析后端",
+                ErrorKind.PERMANENT,
+            )
+            return
 
     # 二次核对，避免批次创建后源文件被替换。
     actual_hash = calculate_file_hash(file_data)
@@ -316,6 +343,7 @@ def _process_item(
         result = process_pdf(
             str(file_path),
             page_count,
+            source_file_name=str(item.get("file_name") or file_path.name),
             abolition_confirmation=abolition_confirmation,
             abolition_approval_confirmation=abolition_approval_confirmation,
         )
@@ -373,16 +401,15 @@ def _eligible(
     return False
 
 
-def _refresh_batch(batch_id: str) -> dict[str, Any]:
-    """重新统计批次状态并持久化。"""
-    batch = get_batch(batch_id)
-    items = get_batch_items(batch_id)
+def _summarize_batch_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """按文件任务推导状态，区分真正运行和等待下次手动续跑。"""
     counts = {
         "succeeded_count": sum(i.get("status") == BatchItemStatus.SUCCEEDED.value for i in items),
         "skipped_count": sum(i.get("status") == BatchItemStatus.SKIPPED.value for i in items),
         "retryable_failed_count": sum(
             i.get("status") == BatchItemStatus.RETRY_WAIT.value
-            or i.get("error_kind") == ErrorKind.TRANSIENT.value
+            or (i.get("status") == BatchItemStatus.FAILED.value
+                and i.get("error_kind") == ErrorKind.TRANSIENT.value)
             for i in items
         ),
         "permanent_failed_count": sum(
@@ -408,17 +435,32 @@ def _refresh_batch(batch_id: str) -> dict[str, Any]:
             status = BatchStatus.PARTIAL_FAILED.value
         else:
             status = BatchStatus.FAILED.value
-        finished_at = datetime.now()
-    else:
+    elif any(i.get("status") == BatchItemStatus.RUNNING.value for i in items):
         status = BatchStatus.RUNNING.value
-        finished_at = None
+    elif any(i.get("status") == BatchItemStatus.PENDING.value for i in items):
+        status = BatchStatus.PENDING.value
+    elif any(i.get("status") == BatchItemStatus.RETRY_WAIT.value for i in items):
+        status = BatchStatus.RETRY_WAIT.value
+    else:
+        status = BatchStatus.PENDING.value
+    return {"status": status, **counts}
+
+
+def _refresh_batch(batch_id: str) -> dict[str, Any]:
+    """重新统计批次状态并持久化。"""
+    batch = get_batch(batch_id)
+    if not batch:
+        raise ValueError(f"批次不存在: {batch_id}")
+    items = get_batch_items(batch_id)
+    summary = _summarize_batch_items(items)
+    terminal_statuses = {BatchStatus.SUCCEEDED.value, BatchStatus.PARTIAL_FAILED.value, BatchStatus.FAILED.value}
+    finished_at = (batch.get("finished_at") or datetime.now()) if summary["status"] in terminal_statuses else None
 
     update_batch(
         batch_id,
         {
-            "status": status,
-            **counts,
-            "started_at": (batch or {}).get("started_at") or datetime.now(),
+            **summary,
+            "started_at": batch.get("started_at") or datetime.now(),
             "finished_at": finished_at,
         },
     )
@@ -436,36 +478,86 @@ def run_batch(
     if not batch:
         raise ValueError(f"批次不存在: {batch_id}")
 
-    update_batch(
-        batch_id,
-        {
-            "status": BatchStatus.RUNNING.value,
-            "started_at": batch.get("started_at") or datetime.now(),
-            "finished_at": None,
-        },
-    )
-    versions = ProcessingVersion(
-        parser_version=batch.get("parser_version", ""),
-        embedding_model=batch.get("embedding_model", ""),
-        llm_model=batch.get("llm_model", ""),
-        pipeline_version=batch.get("pipeline_version", ""),
-    )
-    max_attempts = int(batch.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+    active_item_id: str | None = None
+    try:
+        update_batch(
+            batch_id,
+            {
+                "status": BatchStatus.RUNNING.value,
+                "started_at": batch.get("started_at") or datetime.now(),
+                "finished_at": None,
+            },
+        )
+        versions = ProcessingVersion(
+            parser_version=batch.get("parser_version", ""),
+            embedding_model=batch.get("embedding_model", ""),
+            llm_model=batch.get("llm_model", ""),
+            pipeline_version=batch.get("pipeline_version", ""),
+        )
+        max_attempts = int(batch.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
 
-    for item in get_batch_items(batch_id):
-        if item.get("status") == BatchItemStatus.RUNNING.value and _is_stale(item):
-            update_batch_item(item["item_id"], {"status": BatchItemStatus.PENDING.value})
-        if _eligible(item, resume, max_attempts):
-            _process_item(
-                item,
-                versions,
-                max_attempts,
-                abolition_confirmation,
-                abolition_approval_confirmation,
+        for item in get_batch_items(batch_id):
+            file_name = str(item.get("file_name") or Path(item.get("file_path") or "").name)
+            if file_name.startswith("~$"):
+                now = datetime.now()
+                update_batch_item(
+                    item["item_id"],
+                    {
+                        "status": BatchItemStatus.SKIPPED.value,
+                        "last_error": "忽略 Office 临时锁文件",
+                        "error_kind": None,
+                        "next_retry_at": None,
+                        "finished_at": now,
+                        "heartbeat_at": now,
+                    },
+                )
+                _refresh_batch(batch_id)
+                continue
+
+            if item.get("status") == BatchItemStatus.RUNNING.value and _is_stale(item):
+                update_batch_item(item["item_id"], {"status": BatchItemStatus.PENDING.value})
+            if _eligible(item, resume, max_attempts):
+                active_item_id = str(item["item_id"])
+                _process_item(
+                    item,
+                    versions,
+                    max_attempts,
+                    abolition_confirmation,
+                    abolition_approval_confirmation,
+                )
+                active_item_id = None
+                _refresh_batch(batch_id)
+
+        return _refresh_batch(batch_id)
+    except BaseException:
+        # 中断或未捕获异常退出时释放当前任务，供 --resume-batch 立即续跑。
+        try:
+            now = datetime.now()
+            if active_item_id:
+                latest_item = next(
+                    (item for item in get_batch_items(batch_id)
+                     if str(item.get("item_id")) == active_item_id),
+                    None,
+                )
+                if latest_item and latest_item.get("status") == BatchItemStatus.RUNNING.value:
+                    update_batch_item(
+                        active_item_id,
+                        {
+                            "status": BatchItemStatus.PENDING.value,
+                            "last_error": "批次处理被中断或异常退出，任务已释放，可续跑",
+                            "error_kind": None,
+                            "next_retry_at": None,
+                            "finished_at": None,
+                            "heartbeat_at": now,
+                        },
+                    )
+            update_batch(
+                batch_id,
+                {"status": BatchStatus.PENDING.value, "finished_at": None},
             )
-            _refresh_batch(batch_id)
-
-    return _refresh_batch(batch_id)
+        except Exception as cleanup_error:
+            print(f"异常退出后的批次状态清理失败: {cleanup_error}")
+        raise
 
 
 def get_batch_status(batch_id: str) -> dict[str, Any]:
@@ -474,4 +566,5 @@ def get_batch_status(batch_id: str) -> dict[str, Any]:
     if not batch:
         raise ValueError(f"批次不存在: {batch_id}")
     items = get_batch_items(batch_id)
-    return {"batch": batch, "items": items}
+    # 查询也按当前任务重算，旧批次的历史 running 值不会继续误导用户。
+    return {"batch": {**batch, **_summarize_batch_items(items)}, "items": items}

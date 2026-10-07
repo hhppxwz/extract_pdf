@@ -6,23 +6,36 @@ import os
 import re
 import tempfile
 import json
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, Query, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
 from models import ProcessingStatus
+from config import app_config
 from pipeline import process_pdf
 from metadata_service import get_file_status, get_file_blocks, record_file_start
 from storage_adapter import storage
 from table_catalog import search_extracted_tables, query_catalogued_table_data
 
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    from policy.warmup import warmup_policy_qa
+    # 等待预热结束后接受请求，避免第一个用户承担模型及索引初始化耗时。
+    application.state.policy_qa_warmup = await run_in_threadpool(warmup_policy_qa)
+    yield
+
+
 app = FastAPI(
     title="PDF 多模态提取入仓服务",
     description="基于 cloudmineru + PostgreSQL(pgvector+JSONB) + MinIO 的 PDF 多模态提取 Pipeline",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # 默认允许开发环境跨域；生产环境可用 CORS_ALLOW_ORIGINS 设置逗号分隔的域名白名单。
@@ -35,7 +48,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -54,12 +67,17 @@ async def upload_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    """上传一个 PDF，立即返回任务 ID，并在后台完成提取。"""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+    """上传 PDF 或 Word，立即返回任务 ID，并在后台完成提取。"""
+    from pathlib import Path
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".pdf", ".doc", ".docx"}:
+        raise HTTPException(status_code=400, detail="仅支持 PDF、DOC 和 DOCX 文件")
+    if suffix in {".doc", ".docx"} and app_config.parser.parser_backend != "cloudmineru":
+        raise HTTPException(status_code=400, detail="DOC/DOCX 仅支持 cloudmineru 解析后端")
 
     # 保存上传文件到临时目录
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
@@ -194,6 +212,146 @@ async def policy_qa_page():
     """提供无需前端构建工具的制度问答页面。"""
     from policy.answer_ui import render_policy_qa_page
     return HTMLResponse(render_policy_qa_page())
+
+
+@app.get("/", include_in_schema=False)
+async def policy_home():
+    """将首页引导至制度问答页面。"""
+    return RedirectResponse("/policy-qa")
+
+
+@app.get("/api/policies")
+async def list_policy_catalog(
+    q: str = Query("", max_length=200),
+    status: str = Query(""),
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """列出已入库制度，支持关键词、效力状态和分页。"""
+    if status not in {"", "current", "invalid", "unknown"}:
+        raise HTTPException(status_code=422, detail="status 必须是 current、invalid 或 unknown")
+    from policy.web_catalog import list_policies
+
+    return list_policies(q, status, limit, offset)
+
+
+@app.get("/api/policies/{policy_id}")
+async def get_policy_catalog_detail(policy_id: str):
+    """读取制度当前结构版本的条款全文。"""
+    from policy.web_catalog import get_policy_detail
+
+    result = get_policy_detail(policy_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="制度不存在")
+    return result
+
+
+class ConversationTitle(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+
+
+class ConversationQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    as_of: Optional[date] = None
+
+
+class MessageFeedback(BaseModel):
+    rating: str
+
+
+def _browser_token(request: Request) -> str:
+    return request.cookies.get("policy_browser", "")
+
+
+@app.post("/api/conversations", status_code=201)
+async def create_policy_conversation(request: Request):
+    """为当前匿名浏览器创建持久问答会话。"""
+    from policy.web_conversations import create_conversation, new_browser_token
+
+    token = _browser_token(request) or new_browser_token()
+    response = JSONResponse(create_conversation(token), status_code=201)
+    response.set_cookie(
+        "policy_browser", token, httponly=True, secure=request.url.scheme == "https",
+        samesite="lax", max_age=60 * 60 * 24 * 180,
+    )
+    return response
+
+
+@app.get("/api/conversations")
+async def list_policy_conversations(request: Request):
+    from policy.web_conversations import list_conversations
+
+    return {"items": list_conversations(_browser_token(request))}
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_policy_conversation(request: Request, conversation_id: str):
+    from policy.web_conversations import get_conversation
+
+    result = get_conversation(_browser_token(request), conversation_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return result
+
+
+@app.patch("/api/conversations/{conversation_id}")
+async def rename_policy_conversation(request: Request, conversation_id: str, payload: ConversationTitle):
+    from policy.web_conversations import rename_conversation
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="会话名称不能为空")
+    if not rename_conversation(_browser_token(request), conversation_id, title):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"conversation_id": conversation_id, "title": title}
+
+
+@app.delete("/api/conversations/{conversation_id}", status_code=204)
+async def delete_policy_conversation(request: Request, conversation_id: str):
+    from policy.web_conversations import delete_conversation
+
+    if not delete_conversation(_browser_token(request), conversation_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
+@app.post("/api/conversations/{conversation_id}/messages", status_code=201)
+async def ask_in_policy_conversation(
+    request: Request, conversation_id: str, payload: ConversationQuestion,
+):
+    """生成回答并将问题、回答及服务端引用一起写入会话。"""
+    from policy.answering import answer_policy_question
+    from policy.retrieval import PolicyClauseIndexNotReadyError, PolicyClauseRetrievalServiceError
+    from policy.web_conversations import get_conversation, save_message
+
+    token = _browser_token(request)
+    if get_conversation(token, conversation_id) is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="问题不能为空")
+    try:
+        result = answer_policy_question(question, payload.as_of.isoformat() if payload.as_of else None)
+    except PolicyClauseIndexNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyClauseRetrievalServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    message = save_message(token, conversation_id, question, result)
+    if message is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return message
+
+
+@app.post("/api/messages/{message_id}/feedback")
+async def feedback_policy_message(request: Request, message_id: str, payload: MessageFeedback):
+    from policy.web_conversations import save_feedback
+
+    if payload.rating not in {"helpful", "unhelpful"}:
+        raise HTTPException(status_code=422, detail="rating 必须是 helpful 或 unhelpful")
+    if not save_feedback(_browser_token(request), message_id, payload.rating):
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"message_id": message_id, "rating": payload.rating}
 
 
 @app.get("/policy-workflow-graph/{run_id}")

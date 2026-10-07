@@ -9,7 +9,10 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import policy.retrieval as retrieval
 from policy.retrieval import (
     POLICY_CLAUSE_INDEX_NAME,
     build_clause_index_text,
@@ -189,6 +192,173 @@ class PolicyRetrievalRuleTests(unittest.TestCase):
         self.assertEqual(response["warnings"], ["测试警告"])
         self.assertEqual(response["results"][0]["policy"]["family_id"], "family_1")
 
+
+class PolicyRetrievalBM25Tests(unittest.TestCase):
+    """验证 BM25 召回的生命周期、数据范围和混合排序行为。"""
+
+    def setUp(self) -> None:
+        retrieval._bm25_documents = []
+        retrieval._bm25_index = None
+        if hasattr(retrieval, "_bm25_index_ready"):
+            retrieval._bm25_index_ready = False
+
+    def tearDown(self) -> None:
+        retrieval._bm25_documents = []
+        retrieval._bm25_index = None
+        if hasattr(retrieval, "_bm25_index_ready"):
+            retrieval._bm25_index_ready = False
+
+    def test_bm25_search_builds_index_lazily_and_reuses_it(self) -> None:
+        """首次查询自动建索引，后续查询复用同一份内存索引。"""
+        documents = [{
+            "clause_id": "c1",
+            "policy_id": "p1",
+            "level": "article",
+            "raw_text": "报销差旅费应提交发票。",
+            "search_text": "第十二条 报销差旅费应提交发票。",
+        }]
+
+        with patch.object(
+            retrieval, "load_policy_clauses_for_bm25", return_value=documents
+        ) as loader:
+            first = retrieval.search_policy_clauses_bm25("发票", top_k=1)
+            second = retrieval.search_policy_clauses_bm25("差旅费", top_k=1)
+
+        self.assertEqual(first[0]["id"], "c1")
+        self.assertEqual(second[0]["id"], "c1")
+        loader.assert_called_once()
+
+    def test_bm25_loader_uses_current_searchable_clauses_and_citation_metadata(self) -> None:
+        """BM25 不能混入旧结构版本或章节标题，并且必须保留引用字段。"""
+        clauses = [
+            {
+                "clause_id": "current",
+                "policy_id": "p1",
+                "level": "article",
+                "chapter_path": ["第三章 办理要求"],
+                "article_no": "第十二条",
+                "paragraph_no": "",
+                "item_no": "",
+                "raw_text": "当前条款应提交发票。",
+                "search_text": "第三章 办理要求 第十二条 当前条款应提交发票。",
+                "page_start": 8,
+                "page_end": 9,
+                "structure_version": "v2",
+                "is_active": True,
+                "sequence_no": 2,
+            },
+            {
+                "clause_id": "stale",
+                "policy_id": "p1",
+                "level": "article",
+                "raw_text": "旧版本条款。",
+                "search_text": "旧版本条款。",
+                "structure_version": "v1",
+                "is_active": True,
+                "sequence_no": 1,
+            },
+            {
+                "clause_id": "heading",
+                "policy_id": "p1",
+                "level": "chapter",
+                "raw_text": "第三章 办理要求",
+                "search_text": "第三章 办理要求",
+                "structure_version": "v2",
+                "is_active": True,
+                "sequence_no": 0,
+            },
+        ]
+        policy_documents = [{
+            "policy_id": "p1",
+            "structure_version": "v2",
+            "file_id": "file-1",
+            "file_name": "差旅费管理办法.pdf",
+            "title": "差旅费管理办法",
+        }]
+        relational_calls: list[str] = []
+
+        def query(table_name: str, *_args: object, **_kwargs: object) -> list[dict]:
+            relational_calls.append(table_name)
+            if table_name == "policy_clauses":
+                return clauses
+            if table_name == "policy_documents":
+                return policy_documents
+            raise AssertionError(f"意外查询表：{table_name}")
+
+        fake_storage = SimpleNamespace(
+            relational=SimpleNamespace(query=query),
+            db=SimpleNamespace(fetch_all=lambda _sql: clauses),
+        )
+        with (
+            patch("storage_adapter.storage", fake_storage),
+            patch("policy.storage.ensure_policy_tables"),
+        ):
+            loaded = retrieval.load_policy_clauses_for_bm25()
+
+        self.assertEqual([item["clause_id"] for item in loaded], ["current"])
+        self.assertIn("policy_clauses", relational_calls)
+        self.assertIn("policy_documents", relational_calls)
+        self.assertEqual(loaded[0]["metadata"]["title"], "差旅费管理办法")
+        self.assertEqual(loaded[0]["metadata"]["page_start"], 8)
+        self.assertEqual(
+            loaded[0]["metadata"]["chapter_path"], ["第三章 办理要求"]
+        )
+
+    def test_invalidation_forces_bm25_rebuild(self) -> None:
+        """条款更新后显式失效索引，下一次查询必须读取新语料。"""
+        invalidate = getattr(retrieval, "invalidate_policy_clause_bm25_index", None)
+        self.assertIsNotNone(invalidate)
+        corpora = [[{
+            "clause_id": "old",
+            "policy_id": "p1",
+            "raw_text": "旧关键词。",
+            "search_text": "旧关键词。",
+        }], [{
+            "clause_id": "new",
+            "policy_id": "p1",
+            "raw_text": "新关键词。",
+            "search_text": "新关键词。",
+        }]]
+
+        with patch.object(
+            retrieval, "load_policy_clauses_for_bm25", side_effect=corpora
+        ) as loader:
+            retrieval.search_policy_clauses_bm25("旧关键词", top_k=1)
+            invalidate()
+            result = retrieval.search_policy_clauses_bm25("新关键词", top_k=1)
+
+        self.assertEqual(result[0]["id"], "new")
+        self.assertEqual(loader.call_count, 2)
+
+    def test_fusion_aware_reranking_uses_rrf_score(self) -> None:
+        """混合检索的最终排序不能再次被较高的纯向量分数覆盖。"""
+        candidates = [
+            {
+                "rrf_score": 0.032,
+                "similarity": 0.55,
+                "metadata": {
+                    "clause_id": "exact",
+                    "search_text": "差旅费报销应提交发票和审批单。",
+                },
+            },
+            {
+                "rrf_score": 0.016,
+                "similarity": 0.82,
+                "metadata": {
+                    "clause_id": "semantic",
+                    "search_text": "出差人员应厉行节约。",
+                },
+            },
+        ]
+
+        ranked = retrieval.rerank_clause_candidates(
+            "差旅费报销发票", candidates, top_k=2, use_fusion_score=True
+        )
+
+        self.assertEqual(
+            [item["metadata"]["clause_id"] for item in ranked],
+            ["exact", "semantic"],
+        )
 
 class PolicyPackageLayoutTests(unittest.TestCase):
     """验证制度领域模块从统一包导入，防止目录重构留下分散入口。"""

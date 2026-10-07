@@ -81,6 +81,15 @@ class LLMConfig:
     parent_context_chars: int = field(default_factory=lambda: int(os.getenv(
         "LLM_PARENT_CONTEXT_CHARS", "600"
     )))
+    knowledge_v2_batch_size: int = field(default_factory=lambda: max(1, int(os.getenv(
+        "KNOWLEDGE_V2_BATCH_SIZE", "4"
+    ))))
+    knowledge_v2_ancestor_depth: int = field(default_factory=lambda: max(0, int(os.getenv(
+        "KNOWLEDGE_V2_CONTEXT_ANCESTOR_DEPTH", "1"
+    ))))
+    knowledge_v2_max_tokens: int = field(default_factory=lambda: max(512, int(os.getenv(
+        "KNOWLEDGE_V2_MAX_TOKENS", "2400"
+    ))))
     confidence_threshold: float = 0.7
 
 
@@ -99,6 +108,21 @@ class AnswerLLMConfig:
     thinking: bool = field(default_factory=lambda: os.getenv(
         "ANSWER_LLM_THINKING", "false"
     ).strip().lower() in {"1", "true", "yes", "on"})
+    rerank_enabled: bool = field(default_factory=lambda: os.getenv(
+        "POLICY_SEMANTIC_RERANK_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"})
+    rerank_timeout_seconds: float = field(default_factory=lambda: max(1.0, float(os.getenv(
+        "POLICY_SEMANTIC_RERANK_TIMEOUT_SECONDS", "45"
+    ))))
+    rerank_candidate_limit: int = field(default_factory=lambda: min(100, max(1, int(os.getenv(
+        "POLICY_SEMANTIC_RERANK_CANDIDATES", "30"
+    )))))
+    rerank_cache_ttl_seconds: float = field(default_factory=lambda: max(0.0, float(os.getenv(
+        "POLICY_SEMANTIC_RERANK_CACHE_TTL_SECONDS", "600"
+    ))))
+    rerank_cache_max_entries: int = field(default_factory=lambda: max(0, int(os.getenv(
+        "POLICY_SEMANTIC_RERANK_CACHE_MAX_ENTRIES", "256"
+    ))))
 
 
 @dataclass

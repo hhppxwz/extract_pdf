@@ -185,11 +185,14 @@ class PolicyAbolitionCliTests(unittest.TestCase):
         with (
             patch("fitz.open", return_value=fake_document),
             patch("pipeline.process_pdf", return_value=result) as process,
+            patch("policy.clause_export.export_file_clause_structure") as export,
         ):
             from main import run_process
             run_process("policy.pdf")
 
         self.assertIsNotNone(process.call_args.kwargs["abolition_confirmation"])
+        self.assertEqual(export.call_args.args[0], 'pdf_1')
+        self.assertEqual(export.call_args.args[1].name, 'policy_条款重组结果.json')
         self.assertIsNotNone(process.call_args.kwargs["abolition_approval_confirmation"])
 
     def test_status_counts_review_and_resolution_states(self) -> None:

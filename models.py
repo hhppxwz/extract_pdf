@@ -48,6 +48,7 @@ class BatchStatus(str, Enum):
     """批任务状态"""
     PENDING = "pending"
     RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
     SUCCEEDED = "succeeded"
     PARTIAL_FAILED = "partial_failed"
     FAILED = "failed"
@@ -249,7 +250,7 @@ class ProcessingVersion(BaseModel):
 # ============================================================
 
 class PolicyValidityStatus(str, Enum):
-    """制度效力状态。未人工核验的制度统一为 unknown。"""
+    """制度默认有效；已确认废止为 invalid，冲突或待核实为 unknown。"""
     CURRENT = "current"
     INVALID = "invalid"
     UNKNOWN = "unknown"
@@ -349,6 +350,14 @@ class PolicyAnnotationDecision(str, Enum):
     ADDED = "added"
 
 
+class PolicyClauseNormType(str, Enum):
+    """制度条款规范类型，允许一条条款包含多个类型。"""
+    OBLIGATION = "obligation"
+    PERMISSION = "permission"
+    PROHIBITION = "prohibition"
+    OTHER = "other"
+
+
 class PolicyDocument(BaseModel):
     """制度文件结构化记录。"""
     policy_id: str
@@ -360,7 +369,7 @@ class PolicyDocument(BaseModel):
     issue_date: Optional[str] = None
     effective_date: Optional[str] = None
     expiry_date: Optional[str] = None
-    validity_status: PolicyValidityStatus = PolicyValidityStatus.UNKNOWN
+    validity_status: PolicyValidityStatus = PolicyValidityStatus.CURRENT
     version: str = ""
     original_pdf_url: str = ""
     parse_quality: float = 0.0

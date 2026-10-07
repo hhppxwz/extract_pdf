@@ -1,5 +1,9 @@
 # PDF 多模态提取入仓
 
+## 外部 Agent 的 MCP 接入
+
+新增 `policy_mcp` 服务，通过现有 HTTP API 提供条款检索、制度目录、全文读取和带引用问答。默认使用 Streamable HTTP，地址为 `http://127.0.0.1:8001/mcp`，HTTP 模式要求配置 `POLICY_MCP_TOKEN`。业务服务和 MCP 服务分别启动，详细配置及客户端示例见 [制度 MCP 使用说明](policy_mcp/README.md)。
+
 基于 cloudmineru + PostgreSQL(pgvector+JSONB) + MinIO 的 PDF 多模态提取 Pipeline。将一个 PDF 同时产出**文本向量、图片、关系表、键值文档**四种结构化产物。
 
 ## 架构
@@ -20,12 +24,54 @@ PDF 上传 → cloudmineru 解析 → 分类决策(规则+LLM) → 多模态分�
 
 ## 快速开始
 
+### 清理目录内已入库文件并重新解析
+
+批次状态 `running` 表示存在运行中的文件；`retry_wait` 表示尚有文件等待重试，当前命令可能已经返回。等待重试的文件不会在后台自动执行，使用 `python main.py --resume-batch BATCH_ID` 续跑；`--batch-status BATCH_ID` 会列出未完成文件及原因。遇到其他任务占用时会先等待，进程中断遗留的文件状态默认在 30 分钟保护期后可由续跑接管。
+
+批处理按文件内容哈希复用已完成结果，复制文件或改名不会触发重跑。需要重新解析时，先预览再重置：
+
+```powershell
+# 预览目录及子目录中匹配的入库文件、共享文件和废止关系影响范围
+python main.py --reset-folder "D:\policies\sample"
+
+# 确认清理；若其他目录的历史批次也复用了同一文件，显式允许共享结果同步失效
+python main.py --reset-folder "D:\policies\sample" --confirm-reset-folder --allow-shared-reset
+
+# 创建新批次重新解析
+python main.py --process-dir "D:\policies\sample"
+```
+
+如果重置被旧的 `processing/running` 占用阻止，先核实原处理进程已退出，再追加 `--release-stale-reset`。此参数只在确认重置时释放超过批处理保护期（默认 30 分钟）的旧占用，包括文件处理及条款分类、抽取、V2 知识抽取和索引任务。条款任务会锁定并检查整个共享运行的启动、结束和心跳时间；任一近期活动或无法核实时间的活动任务都会阻止释放。遗留运行标为失败，清理失败时释放状态与数据库清理一起回滚。预览不修改状态。目录扫描及历史批次匹配均忽略 Office `~$` 临时锁文件。
+
+如果旧代码抽取不准，需要清除制度元数据后重新入库，追加 `--purge-imported-data`：除常规结果、真实条款问答索引和断言索引外，还清除标题、文号、日期、效力、归族与当前抽取指针，删除所有指向或源自目标制度的废止关系、归族候选，以及本次涉及且无剩余任务的运行。删除废止关系可能改变其他制度的效力，依据剩余关系重算。跨制度共享运行仍有任务时保留；源文件、MinIO 原件、文件/制度稳定 ID 占位和历史 PDF 批次、问答历史、已导出文件不删除。此模式清理入库抽取数据，不是删除历史备份。
+
+```bash
+python main.py --reset-folder "D:\policies\sample" --purge-imported-data
+python main.py --reset-folder "D:\policies\sample" --confirm-reset-folder --allow-shared-reset --release-stale-reset --purge-imported-data
+```
+
+`--purge-imported-data` 已包含强制重置，在 Ctrl+C 后也不受旧任务状态或时间限制，无需另外添加参数：
+
+```bash
+python main.py --reset-folder "D:\policies\sample" --confirm-reset-folder --allow-shared-reset --purge-imported-data
+```
+
+彻底清理忽略文件处理、结构化及条款任务的活动状态，包括近期心跳和无法核实的时间；将关联 PDF 批任务释放为待处理，将关联共享条款运行及其活动任务标为失败，再清理目标文件产物。共享运行中目录外的原始条款不删除，但运行会中止。仍保留共享文件授权、目录范围、读取上限及事务回滚检查；不加 `--confirm-reset-folder` 仍仅预览。此操作不终止后台进程，执行前需停止旧处理进程，避免清理后继续写回。与 `--release-stale-reset` 同用时以强制模式为准。原有 `--force-reset-folder` 保留兼容，彻底清理不需要它。
+
+重置会清理条款、向量、表格、分类、知识抽取及相关审核产物，保留源文件、MinIO 对象、文件和制度主记录，文件状态改为待处理。原批次保留为历史记录，不会自动重跑；已有导出的 JSON 文件也不会自动删除。
+
+重置废止来源制度 A 时，会清理 A 发起的废止关系（含人工审核结论）及引用这些关系的归族候选。若目标制度 B 仍有其他已批准废止关系，则保留失效状态并按剩余关系更新日期；否则仅清除与删除关系相符的失效日期，没有其他失效日期或待处理冲突时恢复为默认有效。独立的人工失效日期继续保留，已确认的制度族归属保留。
+
+重置被废止制度 B 时，保留其他制度发起的入向废止关系及 B 的效力状态。其他 PDF 的条款和向量不会因效力重算被删除。
+
+单文件 `--reset-file FILE_ID` 使用常规关联清理和效力重算逻辑。近期 PDF 批任务占用、制度结构化以及近期或无法核实过期的条款任务禁止重置。目录内任一文件清理失败会回滚整个目录的数据库变更；`--allow-shared-reset`、`--release-stale-reset` 和 `--purge-imported-data` 仅允许与 `--reset-folder` 配合使用。
+
 ### 制度图谱三步上手
 
 如果你的目标是从制度 PDF 中抽取实体和关系，先走下面三步即可；不要先使用流程分流、条款索引或质量报告等进阶命令。
 
 ```powershell
-# 1. 批量导入 PDF；命令结束后记下输出的 batch_id
+# 1. 批量导入 PDF/DOC/DOCX；命令结束后记下输出的 batch_id
 python main.py --process-dir "D:\policies"
 
 # 2. 用 batch_id 抽取制度条款中的实体和关系；首次建议先验证 10 条
@@ -37,6 +83,12 @@ python main.py --export-policy-graph-review policy_run_xxxxxxxxxxxxxxxx --qualit
 ```
 
 第 1 步完成后，输入目录会自动生成 `batch_xxx_条款重组结果.json`；其中保留每份制度的条款顺序、父条款 ID、章节路径、页码和原文，便于直接核查。
+
+一份印发通知包含多个《制度名称》，且正文中能确认各制度独立标题及章节起点时，会自动拆成多份制度记录，共享源文件和通知文号。条款层级、效力识别、检索索引及废止关系分别归属各制度；单文件/批次导出和文件重置覆盖全部制度。第一份制度沿用原制度 ID，其余按源文件 ID 和制度标题生成 ID，重复处理相同文件不会新增重复制度。无法确认完整正文边界时保留单制度处理，不按引用书名猜测附件。
+
+已确认多份制度时，提取的源文件 metadata 通过 `policies` 数组返回各制度的 `title`、通知文号和来源页码，通知名称保存为 `notice_title`，源文件层不再用通知名充当制度 `title`。单制度文件仍使用原来的 `title` 字段。
+
+问答服务启动时会预热本地向量模型（含一次编码）和 BM25 索引，预热结束后开始接受请求，避免首个问题承担初始化耗时。预热不调用 DeepSeek，不消耗问答接口 token；某阶段失败会记录警告，后续检索仍可重试。入库、重置后的索引刷新和缓存失效逻辑保持有效；每个服务进程分别预热，启动耗时会相应增加。
 
 每一步的输出 ID 都是下一步的输入：PDF 导入产生 `batch_id`，实体关系抽取产生 `policy_run_id`。命令行默认帮助也只显示这条路径：
 
@@ -58,11 +110,13 @@ cd D:\mycode\pycharm_project\extract_pdf
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-### 2. 命令行处理 PDF
+### 2. 命令行处理文档
 
 ```powershell
 python main.py --process "C:\path\to\your.pdf"
 ```
+
+目录批处理和上传接口支持 `.pdf`、`.doc`、`.docx`。真正的 Word 文件直接交给 CloudMinerU，不进行本地 PDF 转换；使用 Word 文件时解析后端必须为 `cloudmineru`。部分学校网站下载的 `.doc` 实际是 MIME 封装的 HTML 网页归档，系统会按文件内容识别并在本地提取正文，无需 CloudMinerU；此类文件的章、条、项按提取后的段落解析。
 
 输出示例：
 ```
@@ -162,7 +216,7 @@ python main.py --policy-extraction-status policy_run_xxxxxxxxxxxxxxxx
 python main.py --review-policy-run policy_run_xxxxxxxxxxxxxxxx --reviewer 张三 --review-limit 20
 ```
 
-未配置 LLM 时使用规则抽取；配置 LLM 后只采用模型候选。Qwen 等 LLM 候选默认进入人工审核。审核时输入 `a` 通过、`r` 拒绝、`c` 修正、`n` 补充、`s` 跳过或 `q` 结束。原始模型候选不会被覆盖，人工结论会写入 `policy_manual_annotations`，并保存原文证据的字符起止位置，后续可转换为 BERT 训练标注。制度效力默认是 `unknown`，未经人工核验不会自动判断为现行或废止。
+未配置 LLM 时使用规则抽取；配置 LLM 后只采用模型候选。Qwen 等 LLM 候选默认进入人工审核。审核时输入 `a` 通过、`r` 拒绝、`c` 修正、`n` 补充、`s` 跳过或 `q` 结束。原始模型候选不会被覆盖，人工结论会写入 `policy_manual_annotations`，并保存原文证据的字符起止位置，后续可转换为 BERT 训练标注。制度默认为 `current`（默认有效），不补造缺失的生效日期。确认废止后标为 `invalid`；未解决的日期或效力冲突保留 `unknown`。未来生效或废止仍按查询日期判断；已确认废止但日期未知时，当前问答排除，历史查询保留待核实。
 
 **制度废止关系审核：**
 
@@ -282,9 +336,17 @@ GET /policy-search?q=差旅住宿标准&top_k=10&as_of=2020-06-01
 
 ### 基于制度证据的初步问答
 
+跨制度检索先合并向量和 BM25 候选，再复用问答模型对融合排名靠前的候选进行语义评分，默认最多 30 条，通过 `POLICY_SEMANTIC_RERANK_CANDIDATES` 可调整为 1 至 100 条。评分发生在最终结果截断和证据名额分配之前，不针对特定问法扩展关键词。效力未知的相关条款仍可引用并解释原文，同时提示待核实；明确不适用的条款继续排除。
+
+语义重排默认启用，可通过 `POLICY_SEMANTIC_RERANK_ENABLED=false` 关闭；`POLICY_SEMANTIC_RERANK_TIMEOUT_SECONDS` 默认 45 秒。缓存未命中时增加一次问答模型请求；模型不可用或评分不合法时保留混合召回排序并返回降级警告。只引用适用性待核实条款的回答不能给出确定结论。
+
+重排评分使用有容量上限的进程内缓存：`POLICY_SEMANTIC_RERANK_CACHE_TTL_SECONDS` 默认 600 秒，`POLICY_SEMANTIC_RERANK_CACHE_MAX_ENTRIES` 默认 256，任一设为 0 可禁用缓存。相同问题、日期、模型及有序候选内容复用评分，并合并相同的并发评分请求。缓存只保存评分，不保存回答或制度效力；条款、标题或结构版本变化会产生新缓存键，本进程入库更新、索引重建和重置也会清空缓存。重启后缓存为空，多进程各自缓存，其他进程的数据变更依靠候选内容变化识别。命中缓存仍会召回候选并实时判断效力，最终回答生成仍调用问答模型。
+
 `POST /policy-answer` 会从最多三份制度中选择最多八条相关条款，再使用独立的 `ANSWER_LLM_API_URL`、`ANSWER_LLM_API_KEY` 和 `ANSWER_LLM_MODEL` 配置生成带引用的初步回答。默认接入 DeepSeek 官方 API，不会改变制度抽取和表格分类继续使用的本地 Qwen：
 
-启动 API 服务后，可直接打开 `http://127.0.0.1:8000/policy-qa`，在页面中输入问题并使用日期选择器指定适用日期。
+启动 API 服务后，可直接打开 `http://127.0.0.1:8000/policy-qa`。页面提供制度问答、条款检索、制度库与完整结构化条款、服务端历史会话和回答反馈。历史会话依赖当前浏览器的 HttpOnly Cookie；清除 Cookie 后不能恢复旧会话。制度效力为 `unknown` 时，页面显示“待核实”。
+
+面向页面的新接口包括 `GET /api/policies`（`q`、`status`、`limit`、`offset`）、`GET /api/policies/{policy_id}`、`POST/GET /api/conversations`、`GET/PATCH/DELETE /api/conversations/{conversation_id}`、`POST /api/conversations/{conversation_id}/messages` 和 `POST /api/messages/{message_id}/feedback`。问答消息接口使用 JSON 请求 `{ "question": "...", "as_of": "YYYY-MM-DD" }`，反馈使用 `{ "rating": "helpful" }` 或 `unhelpful`。完整设计取舍见 [前端实施说明](docs/policy-frontend-implementation.md)。
 
 ```http
 POST /policy-answer
@@ -299,6 +361,47 @@ Content-Type: application/json
 未提供 `as_of` 时，系统只自动识别问题中的完整日期；模糊历史时间会要求补充具体日期，完全没有时间表达则按请求当天检索。模型只能引用服务端提供的证据编号，响应中的制度原文、条款编号和页码由服务端回填。
 
 该接口提供的是基于现有制度库的初步判断，不是正式审批或最终合规裁决。明确的符合、不符合和有条件符合结论都会标记 `requires_human_review=true`。没有明确适用证据、模型未配置、模型超时或输出无法校验时，接口返回 `undetermined` 和已检索原文，不会编造结论。
+
+## 条款义务、许可、禁止分类
+
+制度结构化完成后，可单独对正文非空的条、款、项执行多标签分类。明确的“应当、必须、可以、不得、严禁”等表述优先使用规则；规则无法确定时调用现有 `LLM_*` 配置的本地模型。模型不可用时任务会保留为失败状态，不会误标为“其他”。
+
+```powershell
+python main.py --classify-policy-clauses batch_xxxxxxxxxxxxxxxx
+python main.py --policy-clause-classification-status classification_run_xxxxxxxxxxxxxxxx
+python main.py --resume-policy-clause-classification classification_run_xxxxxxxxxxxxxxxx
+
+python main.py --export-policy-classification-review classification_run_xxxxxxxxxxxxxxxx --quality-output "D:\policy_quality"
+python main.py --import-policy-classification-review "D:\policy_quality\条款分类复核.csv" --classification-reviewer 张三
+```
+
+一条条款可同时属于义务、许可和禁止；“其他”不能与这三类同时出现。复核表最多导出 50 条，人工填写“是否正确”，错误时在“修正标签”中用顿号填写，例如 `义务、禁止`。导入后会生成 `条款分类质量报告.json`，统计多标签完全一致率以及三类标签各自的精确率和召回率。人工标签与系统原始结果分开保存，后续使用时人工结论优先。
+
+**制度知识抽取 V2（推荐试运行）：**
+
+V2 不再把条款级 `process/non_process` 作为抽取入口，而是从全部实质性条款中抽取带连续原文证据的制度断言，再从明确的章、节或父条款结构中聚合办事事项并派生流程视图。旧实体关系和流程图谱链路继续保留，便于同批数据对比。
+
+```powershell
+# 创建并执行 V2 抽取，输出 knowledge_v2_run_id
+python main.py --extract-policy-knowledge-v2 batch_xxxxxxxxxxxxxxxx
+
+# 查看状态或恢复失败条款
+python main.py --policy-knowledge-v2-status knowledge_v2_run_xxxxxxxxxxxxxxxx
+python main.py --resume-policy-knowledge-v2 knowledge_v2_run_xxxxxxxxxxxxxxxx
+
+# 导出、回填并导入断言抽样复核表
+python main.py --export-policy-knowledge-v2-review knowledge_v2_run_xxxxxxxxxxxxxxxx --knowledge-v2-output "D:\policy_quality\V2断言复核.csv"
+python main.py --import-policy-knowledge-v2-review "D:\policy_quality\V2断言复核.csv" --knowledge-v2-reviewer 张三
+
+# 导出事项与流程视图
+python main.py --export-policy-knowledge-v2-view knowledge_v2_run_xxxxxxxxxxxxxxxx --knowledge-v2-output "D:\policy_quality\V2事项流程.json"
+```
+
+V2 默认将同一制度的 4 条目标条款合并为一次模型请求，并在批量响应失败时自动回退为逐条抽取。可在 `.env` 中通过 `KNOWLEDGE_V2_BATCH_SIZE=4` 调整批大小；本地 7B 模型建议使用 2～6，过大会增加 JSON 截断概率。`KNOWLEDGE_V2_MAX_TOKENS=2400` 控制每次批量响应上限。`KNOWLEDGE_V2_CONTEXT_ANCESTOR_DEPTH=1` 控制提供给模型的上级条款层数：0 不提供，1 仅直接父条款，2 再包含祖父条款；层数越高，提示词越长。新运行创建时会固定该值，修改配置不会影响已有运行的断点续跑。运行期间会持续输出完成数、平均耗时和预计剩余时间。
+
+对“学校公文种类包括：”下的“（一）决议。适用于……”等明确列表，V2 逐项生成用途断言，并保留父条款中的“学校公文种类”及其条款 ID；复核 CSV 会显示“所属类别”和“类别来源条款ID”。这类列表项不调用模型，避免把用途说明误当成办事动作。导出的事项流程 JSON 另含 `document_type_graph`：同一父条款的“学校公文种类 → 包含 → [决议、决定、请示……]”合并为一条关系，每个成员附原文条款证据；“请示 → 适用于 → 向上级单位请求指示、批准”等用途关系仍逐项保留。该汇聚视图从已保存的断言派生，旧运行无需重新抽取即可重新导出。
+
+模型结果只有通过类型、端点、证据条款、连续原文及字符位置校验后才会以 `machine_extracted` 状态参与检索增强；`rejected`、`invalid` 结果不会参与。问答仍以条款向量召回为主，并且最终引用只包含原始条款。V2 断言索引不存在或服务失败时会自动退回原有条款检索。
 
 ## 服务配置
 

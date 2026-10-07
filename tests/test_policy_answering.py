@@ -66,9 +66,9 @@ class PolicyAnsweringTests(unittest.TestCase):
         self.assertIn('<button id="submit"', html)
         self.assertIn('id="answer-panel"', html)
         self.assertIn('id="citations"', html)
-        self.assertIn("/policy-answer", html)
-        self.assertIn("new FormData", html)
-        self.assertNotIn("JSON.stringify(payload)", html)
+        self.assertIn("/api/conversations", html)
+        self.assertIn("/api/policies", html)
+        self.assertIn("/policy-search", html)
 
     def test_requested_date_has_priority(self) -> None:
         result = answering.resolve_answer_date(
@@ -117,14 +117,14 @@ class PolicyAnsweringTests(unittest.TestCase):
             3,
         )
 
-    def test_applicable_evidence_precedes_higher_scoring_unknown(self) -> None:
+    def test_relevance_precedes_temporal_certainty(self) -> None:
         candidates = [
             self._candidate("unknown", "c_unknown", 0.99, "unknown"),
             self._candidate("known", "c_known", 0.50, "applicable"),
         ]
         selected = answering.select_answer_evidence(candidates)
 
-        self.assertEqual([item["clause_id"] for item in selected], ["c_known", "c_unknown"])
+        self.assertEqual([item["clause_id"] for item in selected], ["c_unknown", "c_known"])
         self.assertEqual([item["evidence_id"] for item in selected], ["E1", "E2"])
 
     def test_duplicate_clause_is_selected_once(self) -> None:
@@ -178,20 +178,40 @@ class PolicyAnsweringTests(unittest.TestCase):
                 "cited_evidence_ids": [],
             }, ensure_ascii=False), evidence)
 
-    def test_no_applicable_evidence_forces_undetermined_without_llm(self) -> None:
+    def test_unknown_evidence_can_explain_original_provision(self) -> None:
         candidates = [self._candidate("p1", "c1", 0.9, "unknown")]
         with (
             patch("policy.answering.search_indexed_policy_clauses", return_value=candidates),
-            patch("policy.answering.call_answer_llm") as call_llm,
+            patch("policy.answering.call_answer_llm", return_value=json.dumps({
+                "conclusion": "undetermined", "answer": "文件规定普通博士学制为3年或4年。",
+                "conditions": [], "cited_evidence_ids": ["E1"],
+            })) as call_llm,
         ):
             result = answering.answer_policy_question(
                 "差旅标准是什么？", today=date(2026, 9, 16)
             )
 
-        call_llm.assert_not_called()
+        call_llm.assert_called_once()
         self.assertEqual(result["conclusion"], "undetermined")
-        self.assertTrue(result["degraded"])
+        self.assertFalse(result["degraded"])
+        self.assertIn("效力待核实", " ".join(result["warnings"]))
         self.assertEqual(result["citations"][0]["clause_id"], "c1")
+
+    def test_unknown_citations_cannot_support_definite_conclusion(self) -> None:
+        evidence = answering.select_answer_evidence([self._candidate("p1", "c1", 0.9, "unknown")])
+        result = answering.validate_model_answer(json.dumps({
+            "conclusion": "compliant", "answer": "文件规定学制3年。",
+            "conditions": [], "cited_evidence_ids": ["E1"],
+        }), evidence)
+        self.assertEqual(result["conclusion"], "undetermined")
+        self.assertEqual(result["confidence"], "low")
+        self.assertIn("效力待核实", " ".join(result["conditions"]))
+
+    def test_unknown_document_survives_document_limit(self) -> None:
+        candidates = [self._candidate(f"p{i}", f"c{i}", 0.1, "applicable") for i in range(3)]
+        candidates.append(self._candidate("doctoral", "duration", 0.9, "unknown"))
+        selected = answering.select_answer_evidence(candidates)
+        self.assertIn("duration", [item["clause_id"] for item in selected])
 
     def test_ambiguous_time_returns_clarification_without_search(self) -> None:
         with patch("policy.answering.search_indexed_policy_clauses") as search:

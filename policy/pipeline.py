@@ -25,10 +25,11 @@ from policy.storage import (
 STRUCTURE_VERSION = os.getenv("POLICY_STRUCTURE_VERSION", "policy-structure-v1")
 
 _NUMBER = r"[0-9一二三四五六七八九十百千万零〇两]+"
-_BOOK_RE = re.compile(rf"^第\s*({_NUMBER})\s*编(?:[：:、.\s]+(.*))?$", re.S)
-_CHAPTER_RE = re.compile(rf"^第\s*({_NUMBER})\s*章(?:[：:、.\s]+(.*))?$", re.S)
-_SECTION_RE = re.compile(rf"^第\s*({_NUMBER})\s*节(?:[：:、.\s]+(.*))?$", re.S)
-_ARTICLE_RE = re.compile(rf"^第\s*({_NUMBER})\s*条(?:[：:、.\s]+(.*))?$", re.S)
+# 标题可能紧接层级号，不能以是否有空格决定编、章、节的存在。
+_BOOK_RE = re.compile(rf"^第\s*({_NUMBER})\s*编[：:、.\s]*(.*)$", re.S)
+_CHAPTER_RE = re.compile(rf"^第\s*({_NUMBER})\s*章[：:、.\s]*(.*)$", re.S)
+_SECTION_RE = re.compile(rf"^第\s*({_NUMBER})\s*节[：:、.\s]*(.*)$", re.S)
+_ARTICLE_RE = re.compile(rf"^第\s*({_NUMBER})\s*条(?!款)[：:、.\s]*(.*)$", re.S)
 _ARTICLE_INLINE_RE = re.compile(rf"(?<!\S)(第\s*{_NUMBER}\s*条)")
 _PAREN_ITEM_RE = re.compile(r"^[（(]([^）)]+)[）)]\s*(?:[：:、.]\s*)?(.*)$", re.S)
 _CN_ITEM_RE = re.compile(r"^([一二三四五六七八九十百千万]+)、(?:\s*)(.*)$", re.S)
@@ -163,7 +164,23 @@ def _marker(line: str) -> Optional[tuple[str, str, str]]:
     return None
 
 
-def _nearest_parent(current: Optional[_ClauseDraft], level: str) -> Optional[_ClauseDraft]:
+def _numbered_item_rank(label: str) -> Optional[int]:
+    """只为实际编号分配层级，避免把括号中的普通说明当作编号。"""
+    chinese_number = r"[一二三四五六七八九十百千万零〇两]+"
+    for rank, pattern in (
+        (1, rf"{chinese_number}、"),
+        (2, rf"[（(]{chinese_number}[）)]"),
+        (3, r"\d+[.、]"),
+        (4, r"[（(]\d+[）)]"),
+    ):
+        if re.fullmatch(pattern, label):
+            return rank
+    return None
+
+
+def _nearest_parent(
+    current: Optional[_ClauseDraft], level: str, label: str = "", *, numbered_hierarchy: bool = False
+) -> Optional[_ClauseDraft]:
     """寻找新节点的最近合法父节点。"""
     allowed = {
         "book": set(),
@@ -175,7 +192,19 @@ def _nearest_parent(current: Optional[_ClauseDraft], level: str) -> Optional[_Cl
         "preamble": set(),
     }
     node = current
+    rank = _numbered_item_rank(label) if level == "item" else None
+    scope = current
+    while scope and scope.level == "item":
+        scope = scope.parent
+    # 条、款内部统一使用编号层级；正式边界仍由原有章条规则管理。
+    nested_numbers = numbered_hierarchy or bool(scope and scope.level in {"article", "paragraph"})
     while node:
+        if rank is not None and node.level == "item":
+            parent_rank = _numbered_item_rank(node.label)
+            if parent_rank is not None and parent_rank < rank and (
+                nested_numbers
+            ):
+                return node
         if node.level in allowed.get(level, set()):
             return node
         node = node.parent
@@ -191,10 +220,22 @@ def build_policy_clauses(
     drafts: list[_ClauseDraft] = []
     current: Optional[_ClauseDraft] = None
     sequence = 0
+    ordered_blocks = [item for _, item in sorted(
+        enumerate(blocks), key=lambda pair: (pair[1].page_num, pair[0])
+    )]
+    prepared_blocks = [(block, _lines_from_block(block)) for block in ordered_blocks
+                       if block.type in {BlockType.TEXT, BlockType.TABLE}]
+    # 正式章条制度继续使用原规则，仅为没有正式层级的编号文档补充父子关系。
+    formal_levels = {"book", "chapter", "section", "article", "paragraph"}
+    numbered_hierarchy = not any(
+        marker and marker[0] in formal_levels
+        for _, lines in prepared_blocks for line in lines
+        for marker in [_marker(line)]
+    )
 
     def create_node(level: str, label: str, remainder: str, block: ContentBlock) -> _ClauseDraft:
         nonlocal sequence, current
-        parent = _nearest_parent(current, level)
+        parent = _nearest_parent(current, level, label, numbered_hierarchy=numbered_hierarchy)
         sequence += 1
         draft = _ClauseDraft(
             sequence_no=sequence,
@@ -214,13 +255,8 @@ def build_policy_clauses(
         current = draft
         return draft
 
-    ordered_blocks = [item for _, item in sorted(
-        enumerate(blocks), key=lambda pair: (pair[1].page_num, pair[0])
-    )]
-    for block in ordered_blocks:
-        if block.type not in {BlockType.TEXT, BlockType.TABLE}:
-            continue
-        for line in _lines_from_block(block):
+    for block, lines in prepared_blocks:
+        for line in lines:
             marker = _marker(line)
             if marker:
                 level, label, remainder = marker
@@ -289,7 +325,7 @@ def _guess_title(file_name: str, blocks: list[ContentBlock]) -> str:
     from metadata_service import _is_low_confidence_source_name
 
     source_name = Path(file_name).name
-    file_title = Path(source_name).stem.strip()
+    file_title = "".join(Path(source_name).stem.split())
     if file_title and not _is_low_confidence_source_name(source_name):
         return file_title
 
@@ -336,6 +372,49 @@ def _guess_title(file_name: str, blocks: list[ContentBlock]) -> str:
             if re.search(r"关于.{2,100}的通知", "".join(text.split())):
                 return text
     return file_title or "未命名制度"
+
+
+def structure_policy_file(
+    file_id: str, file_name: str, blocks: list[ContentBlock],
+    metadata: Optional[dict[str, Any]] = None, structure_version: str = STRUCTURE_VERSION,
+) -> dict[str, Any]:
+    """拆分同一文件中的制度，分别建立条款、效力和检索索引。"""
+    from policy.document_parts import split_policy_document
+    parts = split_policy_document(blocks, dict(metadata or {}), file_name)
+    old_relations = []
+    if len(parts) > 1:
+        from policy.storage import get_policy_documents_for_file
+        from storage_adapter import storage
+        for old in get_policy_documents_for_file(file_id):
+            old_relations.extend(storage.relational.query(
+                'policy_document_relations', where='source_policy_id = %s',
+                params=(old['policy_id'],), limit=100000))
+    documents = [structure_policy_document(file_id, file_name, part['blocks'],
+                    part['metadata'], structure_version) for part in parts]
+    if old_relations:
+        from policy.storage import get_policy_clauses
+        current_clauses = [clause for doc in documents for clause in get_policy_clauses(doc['policy_id'])]
+        for relation in old_relations:
+            evidence = ''.join(str(relation.get('evidence_text') or '').split())
+            matches = [clause for clause in current_clauses if evidence and
+                       evidence in ''.join(str(clause.get('raw_text') or '').split())]
+            # 只迁移原文证据唯一匹配的关系，保留人工审核结论和关系 ID。
+            if len(matches) == 1:
+                clause = matches[0]
+                storage.relational.update_rows('policy_document_relations', {
+                    'source_policy_id': clause['policy_id'], 'evidence_clause_id': clause['clause_id'],
+                    'page_start': clause['page_start'], 'page_end': clause['page_end'],
+                }, 'relation_id = %s', (relation['relation_id'],))
+            else:
+                insert_review_item(ReviewItem(review_id=f'review_{uuid.uuid4().hex}',
+                    policy_id=relation['source_policy_id'], issue_type='split_relation_needs_review',
+                    description='拆分制度后无法唯一定位原废止证据，请复核关系归属。',
+                    payload={'relation_id': relation['relation_id']}))
+    return {
+        'documents': documents,
+        'clause_count': sum(d['clause_count'] for d in documents),
+        'parse_quality': min(d['parse_quality'] for d in documents),
+    }
 
 
 def structure_policy_document(

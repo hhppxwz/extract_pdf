@@ -22,7 +22,12 @@ CATEGORY_PRIORITY = {
 }
 
 
-def classify_document(file_path: str, filename: str) -> dict:
+def classify_document(
+    file_path: str,
+    filename: str,
+    parsed_text: Optional[str] = None,
+    source_metadata: Optional[dict] = None,
+) -> dict:
     """
     文档类型分类主入口
 
@@ -34,9 +39,21 @@ def classify_document(file_path: str, filename: str) -> dict:
     }
     """
     # 1. 提取文本：前3页 + 末1页（用于捕捉参考文献、落款等）
-    preview_text = _extract_text(file_path, head_pages=3, tail_pages=1)
+    # 主解析流程已经取得 CloudMinerU 文本时直接复用，避免扫描件被
+    # PyMuPDF 的空文字层误判；只有独立调用时才保留旧回退路径。
+    if parsed_text is None:
+        print("!!!!未传入parsed_text")
+    preview_text = (
+        str(parsed_text)[:6000]
+        if parsed_text is not None
+        else _extract_text(file_path, head_pages=3, tail_pages=1)
+    )
+
+
     total_pages = _get_page_count(file_path)
     metadata = _extract_metadata(file_path)
+    if source_metadata:
+        metadata["source_doc_number"] = str(source_metadata.get("doc_number") or "")
 
     # 2. 规则引擎
     doc_type, confidence, reason, signals = _rule_based_classify(
@@ -187,8 +204,16 @@ def _detect_signals(text: str, filename: str, page_count: int, metadata: dict) -
     # ==================== 政策制度 ====================
     # --- 强信号 ---
     # 红头文号（兼容 〔 ] [ 〕 等括号变体，年份限制1900-2099）
-    if re.search(r'[\u4e00-\u9fa5]{2,6}[〔\[](?:19|20)\d{2}[〕\]]\d+号', text):
+    doc_number_pattern = r'[\u4e00-\u9fa5]{2,12}[〔\[［﹝【](?:19|20)\d{2}[〕\]］﹞】]\d+号'
+    if re.search(doc_number_pattern, text) or re.fullmatch(doc_number_pattern, metadata.get("source_doc_number", "")):
         signals.append(Signal("policy_regulation", 1.0, "检测到公文发文字号", True))
+
+    # 制度印发通知的文件名在扫描件中仍然可靠，应作为明确制度信号。
+    if re.search(
+        r'关于印发[《〈].{1,100}(?:办法|规定|条例|细则|制度|意见)[》〉]的通知',
+        filename,
+    ):
+        signals.append(Signal("policy_regulation", 1.0, "文件名为制度印发通知", True))
 
     # 公文主送抄送格式
     if "主送：" in text and "抄送：" in text:

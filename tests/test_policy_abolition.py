@@ -54,6 +54,149 @@ class _FakeConnection:
 class PolicyAbolitionExtractionTests(unittest.TestCase):
     """验证废止条款仅提取明确引用且可追溯的候选。"""
 
+    def test_target_title_removes_spaces_without_changing_evidence(self):
+        text = ('第十六条 本办法自2026年3月1日起施行，'
+                '《武汉大学建设工程项目 全过程 审计 实施办法 》'
+                '（武大审字〔 2021〕3号）同时废止。')
+        result = extract_abolition_candidates({'raw_text': text})[0]
+        self.assertEqual(result['target_title'], '武汉大学建设工程项目全过程审计实施办法')
+        self.assertEqual(result['evidence_text'], text)
+
+    def test_parallel_targets_with_repeated_original_marker(self):
+        for gap in ('、原', '、 原 ', '和原', '原'):
+            text = ('原《武汉大学高等函授教育教学过程实施细则》（武大继教字[2001]29号）'
+                    + gap + '《武汉大学网络教育教学过程管理暂行办法》（武大继教字[2007]9号）同时废止。')
+            with self.subTest(gap=gap):
+                result = extract_abolition_candidates({'raw_text': text})
+                self.assertEqual([r['target_doc_number'] for r in result],
+                                 ['武大继教字〔2001〕29号', '武大继教字〔2007〕9号'])
+                self.assertTrue(all(r['evidence_text'] == text for r in result))
+        text = '依据《上位办法》，原《甲办法》、原《乙办法》同时废止。'
+        self.assertEqual([r['target_title'] for r in extract_abolition_candidates({'raw_text': text})],
+                         ['甲办法', '乙办法'])
+
+    def test_adjacent_targets_keep_both_titles_and_numbers(self):
+        for gap in ('', ' ', '、'):
+            text = ('第三十八条 本细则自发布之日起施行，原'
+                    '《武汉大学货物与服务分散采购项目管理实施细则》（武大采购字〔2018〕1号）'
+                    + gap + '《武汉大学预算金额50万以下建设工程招标与管理实施细则》'
+                    '（武大采购字〔2017〕4号）同时废止。')
+            with self.subTest(gap=gap):
+                result = extract_abolition_candidates({'raw_text': text})
+                self.assertEqual([(r['target_title'], r['target_doc_number']) for r in result], [
+                    ('武汉大学货物与服务分散采购项目管理实施细则', '武大采购字〔2018〕1号'),
+                    ('武汉大学预算金额50万以下建设工程招标与管理实施细则', '武大采购字〔2017〕4号')])
+                self.assertTrue(all(r['evidence_text'] == text for r in result))
+
+    def test_adjacent_list_does_not_include_separate_reference(self):
+        text = '依据《上位办法》，原《甲办法》《乙办法》同时废止。'
+        self.assertEqual([r['target_title'] for r in extract_abolition_candidates({'raw_text': text})],
+                         ['甲办法', '乙办法'])
+        for text in ('《甲办法》《乙办法》第三条同时废止。', '不得废止《甲办法》《乙办法》。'):
+            self.assertEqual(extract_abolition_candidates({'raw_text': text}), [])
+
+    def test_ocr_spaced_day_in_effective_date(self):
+        clause = {"raw_text": (
+            "第三十四条 本办法自 2022 年 7 月 1 5 日起实施，"
+            "《旧办法甲》（武大设字〔2012〕1号）、"
+            "《旧办法乙》（武大设字〔2016〕3号）同时废止。"
+        )}
+        candidates = extract_abolition_candidates(clause)
+        self.assertEqual([item["effective_date"] for item in candidates], ["2022-07-15"] * 2)
+
+    def test_invalid_spaced_date_is_not_invented(self):
+        candidate = extract_abolition_candidates({
+            "raw_text": "本办法自 2022 年 1 3 月 4 日起实施，《旧办法》同时废止。",
+        })[0]
+        self.assertIsNone(candidate["effective_date"])
+
+    def test_black_lenticular_brackets_are_canonical_in_target_number(self):
+        evidence = "第十五条 本办法自2022年6 月 2日起施行，原《武汉大学校园土地管理办法》（武大字【2006】17号）同时废止。"
+        candidate = extract_abolition_candidates({"raw_text": evidence})[0]
+        self.assertEqual(candidate["target_doc_number"], "武大字〔2006〕17号")
+        self.assertIn("武大字【2006】17号", candidate["evidence_text"])
+
+    def test_two_named_policies_self_abolished(self):
+        clause = {"raw_text": (
+            "第二十六条 本规定自2024年1月3日起执行，"
+            "《武汉大学公章使用管理办法》（武大校办字〔2013〕9号）、"
+            "《武汉大学印章制作审批与备案管理规定》（武大密字〔2017〕19号）自行废止。"
+        )}
+        candidates = extract_abolition_candidates(clause)
+        self.assertEqual([item["target_doc_number"] for item in candidates], [
+            "武大校办字〔2013〕9号", "武大密字〔2017〕19号",
+        ])
+
+    def test_abolished_physical_seal_is_not_policy_relation(self):
+        self.assertEqual(extract_abolition_candidates({
+            "raw_text": "各单位启用新章必须同时上缴相关废止印章。",
+        }), [])
+
+    def test_extracts_entire_document_declared_void(self):
+        clause = {"raw_text": (
+            "**第二十八条** 本办法自2026年9月1日起施行。"
+            "原《武汉大学学生医疗保障管理办法（暂行）》（武大体卫字〔2010〕5号）同时作废。"
+        )}
+        candidates = extract_abolition_candidates(clause)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["target_title"], "武汉大学学生医疗保障管理办法（暂行）")
+        self.assertEqual(candidates[0]["target_doc_number"], "武大体卫字〔2010〕5号")
+
+    def test_target_doc_number_removes_internal_spaces_but_keeps_evidence(self):
+        evidence = "原《武汉大学个人信息保护暂行办法》（武大网信函〔 2021〕5 号）同时废止。"
+        candidate = extract_abolition_candidates({"raw_text": evidence})[0]
+        self.assertEqual(candidate["target_doc_number"], "武大网信函〔2021〕5号")
+        self.assertEqual(candidate["evidence_text"], evidence)
+
+    def test_small_brackets_in_target_number_use_standard_form(self):
+        evidence = "《旧办法》（武大科文字﹝ 2017﹞56号）同时废止。"
+        candidate = extract_abolition_candidates({"raw_text": evidence})[0]
+        self.assertEqual(candidate["target_doc_number"], "武大科文字〔2017〕56号")
+        self.assertEqual(candidate["evidence_text"], evidence)
+        self.assertEqual(normalize_doc_number("武大科文字﹝2017﹞56号"), "武大科文字[2017]56号")
+
+    def test_mixed_fullwidth_and_ascii_brackets_are_canonical_when_extracted(self):
+        text = (
+            "原《甲办法》（武大党字［2001］26号）、"
+            "《乙办法》（武大党字[2000]13号）和《丙细则》同时废止。"
+        )
+        candidates = extract_abolition_candidates({"raw_text": text})
+        self.assertEqual([item["target_doc_number"] for item in candidates], [
+            "武大党字〔2001〕26号", "武大党字〔2000〕13号", "",
+        ])
+        self.assertTrue(all(item["evidence_text"] == text for item in candidates))
+
+    def test_evidence_excludes_following_attachment_but_keeps_effective_date(self):
+        evidence = "第三十一条 本办法自 2025 年9 月 1 日起施行。原《武汉大学公文处理办法》（武大党办字〔2012〕8 号）同时废止。"
+        text = evidence + "\n附件：武汉大学文件印制格式标准\n11\n武汉大学文件印制格式标准\n根据《其他规定》制定本标准。"
+        result = extract_abolition_candidates({"raw_text": text})
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["evidence_text"], evidence)
+        self.assertEqual(result[0]["effective_date"], "2025-09-01")
+        self.assertIn(result[0]["evidence_text"], text)
+
+    def test_evidence_stops_before_attachment_without_sentence_terminator(self):
+        text = "《旧办法》同时废止\n附件：印制标准\n11"
+        result = extract_abolition_candidates({"raw_text": text})
+        self.assertEqual(result[0]["evidence_text"], "《旧办法》同时废止")
+
+    def test_parallel_targets_keep_their_own_numbers(self):
+        text = "本办法自2025年4月15日起施行，原《武汉大学国内合作管理办法（试行）》（武大合字〔2023〕3号）、《武汉大学国内合作委员会工作办法（试行）》（武大合字〔2023〕1号）同时废止。"
+        result = extract_abolition_candidates({"raw_text": text})
+        self.assertEqual([(r["target_title"], r["target_doc_number"]) for r in result], [
+            ("武汉大学国内合作管理办法（试行）", "武大合字〔2023〕3号"),
+            ("武汉大学国内合作委员会工作办法（试行）", "武大合字〔2023〕1号"),
+        ])
+        self.assertTrue(all(r["effective_date"] == "2025-04-15" for r in result))
+
+    def test_parallel_lists_accept_both_orders_without_abolishing_references(self):
+        for text in ["依据《上位办法》，《甲办法》和《乙办法》同时废止。", "废止《甲办法》及《乙办法》。"]:
+            with self.subTest(text=text):
+                self.assertEqual([r["target_title"] for r in extract_abolition_candidates({"raw_text": text})], ["甲办法", "乙办法"])
+        for text in ["不得废止《甲办法》及《乙办法》。", "《甲办法》及《乙办法》第三条同时废止。", "《甲办法》。废止《乙办法》第三条。"]:
+            with self.subTest(text=text):
+                self.assertEqual(extract_abolition_candidates({"raw_text": text}), [])
+
     def test_extracts_date_title_number_and_evidence(self) -> None:
         """防止废止候选遗漏生效日期、文号或完整条款证据。"""
         clause = {
@@ -64,7 +207,7 @@ class PolicyAbolitionExtractionTests(unittest.TestCase):
         candidate = extract_abolition_candidates(clause)[0]
         self.assertEqual(candidate["effective_date"], "2016-01-01")
         self.assertEqual(candidate["target_title"], "武汉大学财务管理办法")
-        self.assertEqual(candidate["target_doc_number"], "武大[2000]25号")
+        self.assertEqual(candidate["target_doc_number"], "武大〔2000〕25号")
         self.assertIn("即废止", candidate["evidence_text"])
         self.assertEqual(candidate["page_start"], 18)
 
@@ -117,7 +260,7 @@ class PolicyAbolitionExtractionTests(unittest.TestCase):
         }
         candidate = extract_abolition_candidates(clause)[0]
         self.assertEqual(candidate["target_title"], "旧办法")
-        self.assertEqual(candidate["target_doc_number"], "武大[2000]25号")
+        self.assertEqual(candidate["target_doc_number"], "武大〔2000〕25号")
         self.assertEqual(candidate["evidence_text"], clause["raw_text"])
 
     def test_extracts_target_before_adjacent_bare_abolition_trigger(self) -> None:
@@ -137,7 +280,7 @@ class PolicyAbolitionExtractionTests(unittest.TestCase):
             "raw_text": "《旧办法》(武大[2000]25号)一并废止。",
         }
         candidate = extract_abolition_candidates(clause)[0]
-        self.assertEqual(candidate["target_doc_number"], "武大[2000]25号")
+        self.assertEqual(candidate["target_doc_number"], "武大〔2000〕25号")
 
     def test_does_not_treat_general_reference_as_abolished_target(self) -> None:
         """防止“根据《文件》规定，本办法废止”误废止依据文件。"""
@@ -204,6 +347,13 @@ class PolicyAbolitionExtractionTests(unittest.TestCase):
 class PolicyAbolitionLookupTests(unittest.TestCase):
     """验证目标制度查询仅读取并执行规范化后的精确比较。"""
 
+    def test_doc_number_lookup_matches_black_lenticular_brackets(self) -> None:
+        with patch.object(policy_storage.storage.relational, "query", return_value=[
+            {"policy_id": "old", "doc_number": "武大字〔2006〕17号"}
+        ]):
+            result = policy_storage.find_policy_documents_by_doc_number("武大字【2006】17号")
+        self.assertEqual(result[0]["policy_id"], "old")
+
     def test_doc_number_lookup_matches_equivalent_bracket_form_without_writing(self) -> None:
         """防止文号查询忽略等价括号或发生意外写入。"""
         queries: list[tuple[str, str, int, tuple[object, ...]]] = []
@@ -221,6 +371,20 @@ class PolicyAbolitionLookupTests(unittest.TestCase):
         self.assertEqual(result, [{"policy_id": "old", "doc_number": "武大〔2000〕25号"}])
         self.assertEqual(queries, [(policy_storage.TABLE_POLICY_DOCUMENTS, "", 100000, ())])
         ensure_tables.assert_not_called()
+
+    def test_doc_number_lookup_matches_small_brackets(self) -> None:
+        with patch.object(policy_storage.storage.relational, "query", return_value=[
+            {"policy_id": "old", "doc_number": "武大科文字〔2017〕56号"}
+        ]):
+            result = policy_storage.find_policy_documents_by_doc_number("武大科文字﹝ 2017﹞56号")
+        self.assertEqual(result[0]["policy_id"], "old")
+
+    def test_doc_number_lookup_matches_fullwidth_square_brackets(self) -> None:
+        with patch.object(policy_storage.storage.relational, "query", return_value=[
+            {"policy_id": "old", "doc_number": "武大党字〔2001〕26号"}
+        ]):
+            result = policy_storage.find_policy_documents_by_doc_number("武大党字［2001］26号")
+        self.assertEqual(result[0]["policy_id"], "old")
 
     def test_title_lookup_requires_normalized_exact_match(self) -> None:
         """防止标题查询退化为包含关系等模糊匹配。"""

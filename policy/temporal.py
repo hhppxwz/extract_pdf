@@ -58,6 +58,15 @@ def classify_temporal_status(document: dict[str, Any], as_of: str) -> str:
         return "inapplicable"
     if expiry_date and query_date >= expiry_date:
         return "inapplicable"
+    if document.get('validity_status') == 'invalid' and not expiry_date:
+        # 已确认废止但日期未知：当前排除，历史区间无法推定。
+        return 'inapplicable' if query_date >= date.today() else 'unknown'
+    if document.get('validity_status') == 'unknown':
+        return 'unknown'
+    if document.get('validity_status') == 'current' or (
+        document.get('validity_status') == 'invalid' and expiry_date
+    ):
+        return 'applicable'
     return "applicable" if effective_date else "unknown"
 
 
@@ -67,7 +76,7 @@ def rank_temporal_candidates(
     as_of: str,
     top_k: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """排除明确不适用文档，并将日期未知候选排在明确适用结果之后。"""
+    """排除明确不适用文档，按相关度保留候选并附加适用性信息。"""
     ranked: list[dict[str, Any]] = []
     applicable_by_family: dict[str, list[str]] = {}
     for candidate in candidates:
@@ -81,7 +90,7 @@ def rank_temporal_candidates(
         family_id = str(document.get("family_id") or "")
         if status == "applicable" and family_id:
             applicable_by_family.setdefault(family_id, []).append(policy_id)
-    ranked.sort(key=lambda item: (item["temporal_status"] != "applicable", -float(item.get("score") or 0)))
+    ranked.sort(key=lambda item: (-float(item.get("score") or 0), item["temporal_status"] != "applicable"))
     warnings = [
         f"制度族 {family_id} 在 {as_of} 存在多个适用版本: {', '.join(sorted(set(ids)))}"
         for family_id, ids in applicable_by_family.items() if len(set(ids)) > 1

@@ -27,6 +27,22 @@ from config import app_config
 from models import BlockType, ContentBlock, TableCategory
 
 
+class FormStorageTests(unittest.TestCase):
+    def test_form_keeps_complete_grid_and_html_when_fields_repeat(self) -> None:
+        html = (
+            "<table><tr><th>项目</th><th>内容</th></tr>"
+            "<tr><td>签名</td><td>甲</td></tr><tr><td>签名</td><td>乙</td></tr></table>"
+        )
+        structure = table_pipeline.parse_table_html(html)
+        captured = []
+        with patch.object(table_pipeline.storage.document, "insert_document", side_effect=lambda _, doc: captured.append(doc) or "form_1"):
+            table_pipeline.store_form("pdf_1", "block_1", structure, 0, source_html=html)
+
+        self.assertEqual(captured[0]["table"]["headers"], ["项目", "内容"])
+        self.assertEqual(captured[0]["table"]["rows"], [["签名", "甲"], ["签名", "乙"]])
+        self.assertEqual(captured[0]["source_html"], html)
+
+
 MERGED_FUNDING_TABLE = """
 <table>
   <tr>

@@ -20,12 +20,12 @@ from policy.storage import (
 
 
 _EFFECTIVE_DATE_RE = re.compile(
-    r"自\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*起(?:施行|执行|生效)"
+    r"自\s*((?:\d\s*){4})年\s*((?:\d\s*){1,2})月\s*((?:\d\s*){1,2})日\s*起(?:施行|执行|实施|生效)"
 )
 _QUOTED_POLICY_RE = re.compile(
     r"《(?P<title>[^》]{2,100})》\s*(?:[（(](?P<number>[^）)]{1,80})[）)])?"
 )
-_ABOLITION_RE = re.compile(r"(?:同时|即)?\s*废止")
+_ABOLITION_RE = re.compile(r"(?:同时|自行|即)?\s*(?:废止|作废)")
 _TRAILING_ABOLITION_GAP_RE = re.compile(
     r"^[\s，,、；;。:：]*(?:(?:即|同时|予以|一并)[\s，,、；;。:：]*)*$"
 )
@@ -35,6 +35,9 @@ _NEGATED_ABOLITION_PREFIX_RE = re.compile(
 )
 _PARTIAL_ABOLITION_SUFFIX_RE = re.compile(r"^\s*第[^。！？!?]{0,20}[条款项]")
 _LEADING_TARGET_SUFFIX_RE = re.compile(r"^[\s，,、；;。:：]*$")
+_TARGET_LIST_CONNECTOR_RE = re.compile(
+    r"^(?:[ \t]*(?:原[ \t]*)?|[ \t\r\n]*(?:、|和|及|以及|与)[ \t\r\n]*(?:原[ \t]*)?)$"
+)
 
 AbolitionInsertionDecision = Literal["insert", "skip", "quit"]
 AbolitionInsertionConfirmation = Callable[
@@ -56,35 +59,67 @@ def _is_negated_abolition_prefix(raw_text: str, trigger_start: int) -> bool:
 
 def normalize_doc_number(value: str) -> str:
     """规范文号括号和空白，使等价的全半角写法可精确比较。"""
-    text = str(value or "").strip()
-    text = re.sub(r"\s+", "", text)
-    return text.translate(str.maketrans({
-        "（": "[", "〔": "[", "(": "[",
-        "）": "]", "〕": "]", ")": "]",
-    }))
+    from metadata.document_number import normalize_document_number
+    return normalize_document_number(value)
+
+
+def _display_doc_number(value: str) -> str:
+    """入库和展示时统一文号括号，证据原文不受影响。"""
+    return normalize_doc_number(value).translate(str.maketrans({"[": "〔", "]": "〕"}))
+
+
+def _abolition_evidence(raw_text: str, target_start: int, statement_end: int) -> str:
+    """截取连续原文证据，保留紧邻的生效日期句，不带入附件正文。"""
+    boundaries = list(re.finditer(r"[。！？!?]", raw_text[:target_start]))
+    start = boundaries[-1].end() if boundaries else 0
+    if boundaries:
+        previous_start = boundaries[-2].end() if len(boundaries) > 1 else 0
+        if _EFFECTIVE_DATE_RE.search(raw_text[previous_start:start]):
+            start = previous_start
+    # 终止标点保留在证据中；缺少标点时在换行处结束，避免带入附件或页脚。
+    ending = re.search(r"[。！？!?\r\n]", raw_text[statement_end:])
+    end = len(raw_text)
+    if ending:
+        end = statement_end + ending.start()
+        if ending.group() not in "\r\n":
+            end += 1
+    return raw_text[start:end].strip()
 
 
 def extract_abolition_candidates(clause: dict[str, Any]) -> list[dict[str, Any]]:
     """只提取同句中与废止词直接连接的整份制度引用。"""
     raw_text = str(clause.get("raw_text") or "")
     date_match = _EFFECTIVE_DATE_RE.search(raw_text)
-    effective_date = (
-        f"{int(date_match.group(1)):04d}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
-        if date_match else None
-    )
+    effective_date = None
+    if date_match:
+        try:
+            numbers = [int("".join(part.split())) for part in date_match.groups()]
+            effective_date = date(*numbers).isoformat()
+        except ValueError:
+            pass
     abolition_matches = list(_ABOLITION_RE.finditer(raw_text))
     candidates: list[dict[str, Any]] = []
-    for quoted_match in _QUOTED_POLICY_RE.finditer(raw_text):
+    quoted_matches = list(_QUOTED_POLICY_RE.finditer(raw_text))
+    # 相邻书名或明确并列连接词组成列表；逗号和句号不能把依据文件并入目标列表。
+    groups: list[list[Any]] = []
+    for match in quoted_matches:
+        if groups and _TARGET_LIST_CONNECTOR_RE.fullmatch(raw_text[groups[-1][-1].end():match.start()]):
+            groups[-1].append(match)
+        else:
+            groups.append([match])
+    bounds = {match.start(): (group[0].start(), group[-1].end()) for group in groups for match in group}
+    for quoted_match in quoted_matches:
+        group_start, group_end = bounds[quoted_match.start()]
         trailing_trigger = next(
             (
                 match for match in abolition_matches
                 if (
-                    0 <= match.start() - quoted_match.end() <= 24
+                    0 <= match.start() - group_end <= 24
                     and not _SENTENCE_BOUNDARY_RE.search(
-                        raw_text[quoted_match.end():match.start()]
+                        raw_text[group_end:match.start()]
                     )
                     and _TRAILING_ABOLITION_GAP_RE.fullmatch(
-                        raw_text[quoted_match.end():match.start()]
+                        raw_text[group_end:match.start()]
                     )
                 )
             ),
@@ -94,40 +129,81 @@ def extract_abolition_candidates(clause: dict[str, Any]) -> list[dict[str, Any]]
             (
                 match for match in abolition_matches
                 if (
-                    quoted_match.start() == match.end()
+                    group_start == match.end()
                     and not _is_negated_abolition_prefix(raw_text, match.start())
-                    and _LEADING_TARGET_SUFFIX_RE.fullmatch(raw_text[quoted_match.end():])
+                    and _LEADING_TARGET_SUFFIX_RE.fullmatch(raw_text[group_end:])
                 )
             ),
             None,
         )
         if (
             (trailing_trigger is None and leading_trigger is None)
-            or _PARTIAL_ABOLITION_SUFFIX_RE.match(raw_text[quoted_match.end():])
+            or _PARTIAL_ABOLITION_SUFFIX_RE.match(raw_text[group_end:])
         ):
             continue
         candidates.append({
             "source_policy_id": str(clause.get("policy_id") or ""),
             "evidence_clause_id": str(clause.get("clause_id") or ""),
-            "target_title": quoted_match.group("title").strip(),
-            "target_doc_number": (quoted_match.group("number") or "").strip(),
+            # 清除排版或识别产生的空白，证据仍保留原始文本。
+            "target_title": "".join(quoted_match.group("title").split()),
+            "target_doc_number": _display_doc_number(quoted_match.group("number") or ""),
             "effective_date": effective_date,
-            # 完整条款确保引用在原文中连续、可复核。
-            "evidence_text": raw_text,
+            # 证据只截取相关连续原文，原始条款在条款表中完整保留。
+            "evidence_text": _abolition_evidence(
+                raw_text, group_start,
+                trailing_trigger.end() if trailing_trigger is not None else group_end,
+            ),
             "page_start": int(clause.get("page_start") or 0),
             "page_end": int(clause.get("page_end") or 0),
         })
     return candidates
 
 
-def resolve_abolition_target(target_title: str, target_doc_number: str) -> str | None:
-    """按文号优先、标题精确唯一的顺序匹配目标制度。"""
+def target_publication_year(evidence_text: str, target_title: str) -> int | None:
+    """仅从目标书名紧邻的印发描述读取年份，不把实施日期当作版本年份。"""
+    years = set()
+    for quoted in _QUOTED_POLICY_RE.finditer(str(evidence_text or "")):
+        if "".join(quoted.group("title").split()) != "".join(str(target_title).split()):
+            continue
+        prefix = evidence_text[:quoted.start()]
+        match = re.search(
+            r"((?:19|20)\d{2})\s*年\s*(?:\d{1,2}\s*月\s*(?:\d{1,2}\s*日\s*)?)?"
+            r"(?:印发|发布|颁布|制定)\s*的?\s*$", prefix,
+        )
+        if match:
+            years.add(int(match.group(1)))
+    return next(iter(years)) if len(years) == 1 else None
+
+
+def document_publication_year(document: dict[str, Any]) -> int | None:
+    """文号年份优先，其次使用发文日期；不使用生效日期推算。"""
+    match = re.search(r"\[((?:19|20)\d{2})\]", normalize_doc_number(str(document.get("doc_number") or "")))
+    if match:
+        return int(match.group(1))
+    try:
+        return date.fromisoformat(str(document.get("issue_date"))).year
+    except (ValueError, TypeError):
+        return None
+
+
+def resolve_abolition_target(
+    target_title: str, target_doc_number: str, *, source_policy_id: str = "",
+    target_issue_year: int | None = None,
+) -> str | None:
+    """排除来源自身，并结合文号、目标印发年份匹配唯一版本。"""
+    def eligible(documents):
+        return [document for document in documents
+                if str(document.get("policy_id") or "") != source_policy_id
+                and (target_issue_year is None or document_publication_year(document) == target_issue_year)]
+
     normalized_number = normalize_doc_number(target_doc_number)
     if normalized_number:
-        by_number = find_policy_documents_by_doc_number(normalized_number)
+        by_number = eligible(find_policy_documents_by_doc_number(normalized_number))
         if len(by_number) == 1:
             return str(by_number[0]["policy_id"])
-    by_title = find_policy_documents_by_normalized_title(target_title)
+        # 明确文号无法唯一匹配时，不能用同名但不同文号的文件替代。
+        return None
+    by_title = eligible(find_policy_documents_by_normalized_title(target_title))
     if len(by_title) == 1:
         return str(by_title[0]["policy_id"])
     return None
@@ -141,7 +217,9 @@ def build_abolition_relations(clause: dict[str, Any]) -> list[PolicyDocumentRela
             relation_id=f"relation_{uuid.uuid4().hex}",
             source_policy_id=candidate["source_policy_id"],
             target_policy_id=resolve_abolition_target(
-                candidate["target_title"], candidate["target_doc_number"]
+                candidate["target_title"], candidate["target_doc_number"],
+                source_policy_id=candidate["source_policy_id"],
+                target_issue_year=target_publication_year(candidate["evidence_text"], candidate["target_title"]),
             ),
             target_title=candidate["target_title"],
             target_doc_number=candidate["target_doc_number"],
@@ -198,6 +276,9 @@ def reconcile_unresolved_abolition_relations(
         resolved_id = resolve_abolition_target(
             str(relation.get("target_title") or ""),
             str(relation.get("target_doc_number") or ""),
+            source_policy_id=str(relation.get("source_policy_id") or ""),
+            target_issue_year=target_publication_year(
+                str(relation.get("evidence_text") or ""), str(relation.get("target_title") or "")),
         )
         if resolved_id == policy_id:
             matched.append(relation)

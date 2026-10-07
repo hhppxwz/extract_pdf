@@ -30,6 +30,29 @@ from metadata_service import (
 from storage_adapter import storage
 
 import hashlib
+
+
+def build_document_classification_text(
+    blocks: list[ContentBlock],
+    max_chars: int = 6000,
+) -> str:
+    """从 CloudMinerU 文本块构造文档分类输入。"""
+    ordered = sorted(enumerate(blocks), key=lambda item: (item[1].page_num, item[0]))
+    parts: list[str] = []
+    total = 0
+    for _, block in ordered:
+        if block.type != BlockType.TEXT:
+            continue
+        text = str(block.content or "").strip()
+        if not text:
+            continue
+        remaining = max_chars - total
+        if remaining <= 0:
+            break
+        fragment = text[:remaining]
+        parts.append(fragment)
+        total += len(fragment)
+    return "\n".join(parts)
 '''
 def _convert_parsed_data_to_blocks(
         parsed_data: dict,
@@ -289,7 +312,12 @@ def process_pdf(
         #判断类型：学术期刊/规章制度/……
         classification = {"doc_type": "other", "confidence": 0.0}
         try:
-            classification = classify_document(file_path, file_name)
+            classification = classify_document(
+                file_path,
+                file_name,
+                parsed_text=build_document_classification_text(blocks),
+                source_metadata=(blocks[0].raw or {}).get("source_metadata") if blocks else None,
+            )
         except Exception as e:
             errors.append(f"{datetime.datetime.now()} 分类pdf失败: {e}")
 
@@ -308,7 +336,7 @@ def process_pdf(
 
         resolved_file_name = choose_display_file_name(
             file_name,
-            str(metadata.get("title") or ""),
+            str(metadata.get("title") or metadata.get("notice_title") or ""),
         )
         if resolved_file_name and resolved_file_name != file_name:
             file_name = resolved_file_name
@@ -318,9 +346,9 @@ def process_pdf(
         # 实体、关系抽取由独立命令执行，避免大模型失败影响 PDF 基础处理。
         if doc_type == "policy_regulation":
             try:
-                from policy.pipeline import structure_policy_document
+                from policy.pipeline import structure_policy_file
 
-                structure_result = structure_policy_document(
+                structure_result = structure_policy_file(
                     file_id=file_id,
                     file_name=file_name,
                     blocks=blocks,
@@ -331,29 +359,30 @@ def process_pdf(
                     f"{structure_result['clause_count']} 条，"
                     f"质量 {structure_result['parse_quality']:.3f}"
                 )
+                if len(structure_result['documents']) > 1:
+                    print(f"已从原文件拆分 {len(structure_result['documents'])} 项独立制度")
                 if abolition_confirmation is not None or abolition_approval_confirmation is not None:
                     from policy.abolition import (
                         reconcile_unresolved_abolition_relations,
                         scan_policy_abolition_relations,
                     )
-                if abolition_approval_confirmation is not None:
-                    try:
-                        abolition_reconciliation = reconcile_unresolved_abolition_relations(
-                            str(structure_result["policy_id"]),
-                            abolition_approval_confirmation,
-                        )
-                    except Exception:
-                        # 历史关系回查失败不影响当前文件候选的识别。
-                        errors.append(f"历史废止关系回查或确认失败: {traceback.format_exc()}")
-                if abolition_confirmation is not None:
-                    try:
-                        abolition_summary = scan_policy_abolition_relations(
-                            str(structure_result["policy_id"]),
-                            abolition_confirmation,
-                        )
-                    except Exception:
-                        # 废止候选识别和确认失败不能破坏已经完成的 PDF 解析。
-                        errors.append(f"废止关系识别或确认失败: {traceback.format_exc()}")
+                for document_result in structure_result['documents']:
+                    if abolition_approval_confirmation is not None:
+                        try:
+                            counts = reconcile_unresolved_abolition_relations(
+                                str(document_result["policy_id"]), abolition_approval_confirmation)
+                            for key in abolition_reconciliation:
+                                abolition_reconciliation[key] += counts.get(key, 0)
+                        except Exception:
+                            errors.append(f"历史废止关系回查或确认失败: {traceback.format_exc()}")
+                    if abolition_confirmation is not None:
+                        try:
+                            counts = scan_policy_abolition_relations(
+                                str(document_result["policy_id"]), abolition_confirmation)
+                            for key in abolition_summary:
+                                abolition_summary[key] += counts.get(key, 0)
+                        except Exception:
+                            errors.append(f"废止关系识别或确认失败: {traceback.format_exc()}")
             except Exception as e:
                 errors.append(f"制度条款结构化失败: {traceback.format_exc()}")
 

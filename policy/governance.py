@@ -28,6 +28,9 @@ def apply_effective_date_governance(
             '"policy_id" = %s', (policy_id,),
         )
     elif result["status"] in {"conflict", "needs_review"}:
+        if result['status'] == 'conflict':
+            storage.relational.update_rows('policy_documents', {'validity_status': 'unknown'},
+                '"policy_id" = %s AND "validity_status" <> %s', (policy_id, 'invalid'))
         insert_review_item(ReviewItem(
             review_id=f"review_{uuid.uuid4().hex}", policy_id=policy_id,
             issue_type=f"effective_date_{result['status']}",

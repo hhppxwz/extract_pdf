@@ -1,11 +1,45 @@
-.worktrees/
-__pycache__/
-*.pyc
-.idea/
+# Python 缓存与虚拟环境
 __pycache__/
 *.py[cod]
-.pytest_cache/
+.venv/
+venv/
+env/
 
+# 测试、检查与构建产物
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# 本地环境配置，保留可提交的配置示例
 .env
 .env.*
 !.env.example
+
+# 编辑器、工作树与系统临时文件
+.idea/
+.vscode/
+.worktrees/
+.DS_Store
+Thumbs.db
+~$*
+*.swp
+*.swo
+
+# 本地日志、临时目录与处理结果
+*.log
+/tmp/
+/outputs/
+*_条款重组结果.json
+
+# 本地原始资料与抽样导出，仅忽略项目根目录对应文件
+/规章制度-*/
+/only_policy/
+/test_pdf/
+/V2*.csv

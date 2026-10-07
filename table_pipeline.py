@@ -513,7 +513,8 @@ def store_data_table(
 # ============================================================
 
 def store_form(
-    file_id: str, block_id: str, structure: TableStructure, page_num: int
+    file_id: str, block_id: str, structure: TableStructure, page_num: int,
+    source_html: str = "",
 ) -> str:
     """
     将表单提取为 Key-Value JSON 文档，存入统一的 pdf_forms 表（JSONB 列）。
@@ -540,6 +541,8 @@ def store_form(
         "page_num": page_num,
         "form_type": "extracted_form",
         "fields": kv_pairs,
+        "table": {"headers": structure.headers, "rows": structure.rows},
+        "source_html": source_html,
         "extracted_at": datetime.now().isoformat(),
     }
 
@@ -594,7 +597,7 @@ def process_table_blocks(
 
         elif block.table_category == TableCategory.FORM:
             doc_id = store_form(
-                file_id, block.block_id, structure, block.page_num
+                file_id, block.block_id, structure, block.page_num, source_html=html,
             )
             if doc_id:
                 record_table_catalog(

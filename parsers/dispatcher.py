@@ -43,6 +43,16 @@ class PDFParser:
 
     def parse(self, file_path: str, page_count: int = 0) -> List[ContentBlock]:
         """同步解析 PDF"""
+        if file_path.lower().endswith(".docx"):
+            from parsers.docx_parser import parse_docx
+
+            return parse_docx(file_path)
+        if file_path.lower().endswith(".doc"):
+            from pathlib import Path
+            from parsers.mhtml_doc import is_mhtml_document, parse_mhtml_document
+
+            if is_mhtml_document(Path(file_path).read_bytes()):
+                return parse_mhtml_document(file_path)
         return self.strategy.parse(file_path, page_count)
 
     def submit(self, file_path: str) -> str:

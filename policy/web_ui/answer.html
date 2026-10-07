@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>制度问答</title>
+  <style>
+{{STYLE}}
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>制度问答</h1>
+      <p class="intro">根据已入库制度条款形成初步回答，并保留制度名称、条款编号、页码和原文证据。</p>
+    </header>
+    <nav class="toolbar" aria-label="功能导航"><button id="tab-qa" type="button" aria-selected="true">智能问答</button><button id="tab-search" type="button" aria-selected="false">条款检索</button><button id="tab-library" type="button" aria-selected="false">制度库</button></nav>
+    <main>
+      <form id="qa-form" class="query">
+        <label for="question">问题</label>
+        <textarea id="question" required placeholder="请输入需要查询的制度问题"></textarea>
+        <div class="form-row">
+          <div>
+            <label for="as-of">适用日期（可选）</label>
+            <input id="as-of" type="date">
+          </div>
+          <button id="submit" type="submit">开始查询</button>
+        </div>
+        <p class="hint">不选择日期时，系统会识别问题中的完整日期；没有时间表达则按当天查询。</p>
+        <p id="status" role="status" aria-live="polite"></p>
+      </form>
+      <aside class="history-panel">
+        <strong>使用说明</strong>
+        <p>回答是基于当前制度库的初步判断，不替代正式审批。涉及报销、学籍、处分等事项时，请结合引用原文进行人工复核。</p>
+        <strong style="margin-top:24px">历史会话</strong>
+        <p>保存在服务端，由当前浏览器访问。</p>
+        <button id="new-conversation" class="secondary" type="button">新建问答</button>
+        <ul id="history"></ul>
+      </aside>
+      <section id="welcome">
+        <h2>从制度原文，找到问题的依据。</h2>
+        <p>输入具体问题，系统会检索已入库条款并生成初步回答。每条引用都可以回看原文。</p>
+        <div class="examples" aria-label="示例问题"><button type="button">差旅费报销需要什么材料？</button><button type="button">采购申请需要经过哪些程序？</button><button type="button">请假审批有哪些要求？</button><button type="button">科研经费可以用于哪些支出？</button></div>
+      </section>
+      <section id="loading-panel" hidden role="status" aria-live="polite"><h2>正在查找制度依据</h2><p class="hint">回答会在检索和核对完成后显示。</p><div class="loading-rule"></div></section>
+      <section id="search-panel" hidden>
+        <h2>制度条款检索</h2>
+        <form id="search-form"><label for="search-query">检索词或办事问题</label><input id="search-query" required><div class="form-row"><div><label for="search-date">适用日期（可选）</label><input id="search-date" type="date"></div><button type="submit">检索条款</button></div></form>
+        <p id="search-status" role="status" aria-live="polite"></p><div id="search-results"></div>
+      </section>
+      <section id="library-panel" hidden>
+        <h2>规章制度库</h2>
+        <form id="library-form"><label for="library-query">制度名称、文号或发布部门</label><input id="library-query"><div class="form-row"><div><label for="library-status">效力状态</label><select id="library-status"><option value="">全部</option><option value="current">现行</option><option value="invalid">已失效</option><option value="unknown">待核实</option></select></div><button type="submit">搜索制度</button></div></form>
+        <p id="library-status-text" role="status" aria-live="polite"></p><div id="library-list"></div>
+        <div class="answer-actions"><button id="library-prev" class="secondary" type="button">上一页</button><button id="library-next" class="secondary" type="button">下一页</button></div>
+        <section id="policy-detail" hidden></section>
+      </section>
+      <section id="answer-panel" hidden>
+        <div class="answer-head">
+          <h2>初步回答</h2>
+          <div class="badges">
+            <span id="conclusion" class="badge primary"></span>
+          </div>
+        </div>
+        <p id="answer-text"></p>
+        <button id="expand-answer" type="button" hidden>展开完整回答</button>
+        <div class="answer-actions"><button id="copy-answer" class="secondary" type="button">复制回答</button><button id="retry" class="secondary" type="button">重新查询</button><button id="helpful" class="secondary" type="button">有帮助</button><button id="unhelpful" class="secondary" type="button">没帮助</button></div>
+        <div id="degraded" class="notice" hidden></div>
+        <details id="conditions-section" hidden><summary>条件与待确认事项</summary><ul id="conditions"></ul></details>
+        <details id="warnings-section" hidden><summary>其他提示</summary><ul id="warnings"></ul></details>
+        <details id="thread-history" hidden><summary>本会话的全部问答</summary><div id="transcript"></div></details>
+      </section>
+      <aside id="evidence-panel" class="evidence-panel"><h3>制度依据</h3><p class="hint">选择来源后查看条款原文。</p><div id="citations"></div><button id="show-all-citations" class="secondary" type="button" hidden>查看全部依据</button><div id="citation-detail" hidden></div></aside>
+    </main>
+  </div>
+  <script>
+{{SCRIPT}}
+</script>
+</body>
+</html>

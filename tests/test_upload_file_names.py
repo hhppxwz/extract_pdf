@@ -55,6 +55,31 @@ class UploadFileNameTests(unittest.TestCase):
             "Cracking SQL Barriers.pdf",
         )
 
+    def test_upload_accepts_doc_and_preserves_word_suffix_for_cloudmineru(self) -> None:
+        """防止上传入口在 CloudMinerU 前错误拒绝其原生支持的 Word 文件。"""
+        from api import app
+        from models import ProcessingResult, ProcessingStatus
+
+        result = ProcessingResult(file_id="pdf_doc", status=ProcessingStatus.DONE)
+
+        async def request():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.post(
+                    "/upload",
+                    files={"file": ("制度办法.doc", b"doc-test", "application/msword")},
+                )
+
+        with (
+            patch("api.record_file_start", return_value="pdf_doc"),
+            patch("api.process_pdf", return_value=result) as process,
+        ):
+            response = asyncio.run(request())
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(process.call_args.args[0].endswith(".doc"))
+        self.assertEqual(process.call_args.kwargs["source_file_name"], "制度办法.doc")
+
     def test_temporary_file_name_uses_cleaned_pdf_title(self) -> None:
         """防止低可信 tmp 文件名覆盖 PDF 中可识别的论文标题。"""
         import metadata_service
